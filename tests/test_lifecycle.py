@@ -39,7 +39,8 @@ def test_client_reconnects_and_resubscribes(endpoint, client):
     ep2.state_channel("t.state", {"gen": 2})
     ep2.start()
     second = c.wait_connected(5)
-    assert second.run != run1 and len(ups) == 2
+    assert second.run != run1
+    wait_for(lambda: len(ups) == 2)
     wait_for(lambda: got[-1].data == {"gen": 2} and got[-1].snapshot)
     assert st1.subscriber_count == 0
 
@@ -199,3 +200,14 @@ def test_stream_layouts_differ_per_endpoint(endpoint, client):
     peer = client().connect(5)
     sub = peer.subscribe("t.a", lambda s: None)
     assert sub.layout == Layout([("x", "f64")]) and sub.kind == "stream"
+
+
+def test_on_connect_may_call_the_endpoint(endpoint, client):
+    ep = endpoint()
+    ep.method("t.hello", lambda ctx, p: "hi")
+    ep.start()
+    c = client()
+    got = []
+    c.on_connect = lambda peer: got.append(c.call("t.hello"))
+    c.connect(5)
+    wait_for(lambda: got == ["hi"])

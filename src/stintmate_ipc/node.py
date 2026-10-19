@@ -970,6 +970,7 @@ class ClientSubscription:
         self.closed = False
         self.error: BaseException | None = None
         self.subscribed = threading.Event()
+        self._lock = threading.Lock()
 
     def close(self) -> None:
         self.closed = True
@@ -1081,19 +1082,29 @@ class Client(_Node):
                 return
             self._stop.wait(0.1)
 
+    def _peer_opened(self, peer: Peer) -> None:
+        # Visible as connected before on_connect runs, so the hook may call the endpoint.
+        self._peer = peer
+        self._connected.set()
+        super()._peer_opened(peer)
+
     def _resubscribe_one(self, cs: ClientSubscription) -> None:
         peer = self.peer
         if peer is None or cs.closed:
             return
-        try:
-            cs.current = peer.subscribe(cs.channel, cs.callback, version=cs.version,
-                                        options=cs.options, on_end=cs._ended,
-                                        deliver=cs.deliver)
-            cs.error = None
-            cs.subscribed.set()
-        except (RemoteError, NotConnected, E.ConnectionLost, E.CallTimeout) as exc:
-            cs.error = exc
-            log.info("subscribe %s failed: %s", cs.channel, exc)
+        with cs._lock:  # once per connection, whoever gets here first
+            cur = cs.current
+            if cur is not None and cur.peer is peer and not cur.ended.is_set():
+                return
+            try:
+                cs.current = peer.subscribe(cs.channel, cs.callback, version=cs.version,
+                                            options=cs.options, on_end=cs._ended,
+                                            deliver=cs.deliver)
+                cs.error = None
+                cs.subscribed.set()
+            except (RemoteError, NotConnected, E.ConnectionLost, E.CallTimeout) as exc:
+                cs.error = exc
+                log.info("subscribe %s failed: %s", cs.channel, exc)
 
     def call(self, method: str, params: Any = None, *, version: int = 1,
              timeout: float | None = DEFAULT_TIMEOUT_S, idempotency_key: str | None = None,

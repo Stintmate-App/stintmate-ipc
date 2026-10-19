@@ -26,7 +26,8 @@ def test_connect_and_identity(endpoint, client):
     assert peer.info.app == "pitwall" and peer.info.process == "core"
     assert peer.info.meta == {"x": 1} and peer.version == 2 and peer.run == ep.run
     assert peer.pid == os.getpid()  # GetNamedPipeServerProcessId
-    srv_side = seen[0]
+    from .conftest import wait_for
+    srv_side = wait_for(lambda: seen and seen[0])
     assert srv_side.info.app == "connector-examplesim"
     assert srv_side.info.meta == {"sim": "examplesim"}
     assert srv_side.pid == os.getpid()  # GetNamedPipeClientProcessId
