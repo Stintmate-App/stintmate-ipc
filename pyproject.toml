@@ -1,0 +1,25 @@
+[project]
+name = "stintmate-ipc"
+version = "0.1.0"
+description = "Stintmate IPC v2: an open protocol over Windows named pipes (request/response, event channels, binary streams) and its Python reference implementation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["msgpack>=1.0"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.scripts]
+stintmate-ipc-check = "stintmate_ipc.check.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
