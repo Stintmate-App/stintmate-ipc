@@ -13,3 +13,4 @@ bench/results/
 key
 *.key
 .scratch/
+.pytest_tmp/
