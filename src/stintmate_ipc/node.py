@@ -1064,6 +1064,10 @@ class Client(_Node):
                         log.exception("on_connect_error failed")
                 if not self.reconnect:
                     return
+                if isinstance(exc, HandshakeError) and exc.code == E.VERSION_UNSUPPORTED:
+                    log.error("%s speaks no protocol version this client speaks; giving up",
+                              self.short_name)
+                    return  # SPEC.md 15.3: stop and report (last_error)
                 delay = self.BACKOFF[min(attempt, len(self.BACKOFF) - 1)]
                 if isinstance(exc, HandshakeError) and exc.code == E.UNAUTHORIZED:
                     delay = 10.0  # a wrong key does not fix itself in 2 s
