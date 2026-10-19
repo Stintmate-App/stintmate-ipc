@@ -1,0 +1,498 @@
+{
+  "description": "Frames after the handshake: hex bytes as received, and what they decode to (SPEC.md 5, 6, 10).",
+  "cases": [
+    {
+      "name": "ping",
+      "description": "the smallest useful message",
+      "hex": "110000000182a174a470696e67a27473ce075bcd15",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "ping",
+            "ts": 123456789
+          }
+        }
+      ]
+    },
+    {
+      "name": "pong",
+      "description": "the answer echoes ts",
+      "hex": "110000000182a174a4706f6e67a27473ce075bcd15",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "pong",
+            "ts": 123456789
+          }
+        }
+      ]
+    },
+    {
+      "name": "req",
+      "description": "a request with params, a deadline and an idempotency key",
+      "hex": "670000000187a174a3726571a2696407a16dad70697477616c6c2e7772697465a17601a17083a474797065a36c6170a36c617004a86368616e6e656c7381a57370656564c4040000c03fa2646ccd7530a2696bb76578616d706c6573696d2f3262396631632f6c61702f34",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "req",
+            "id": 7,
+            "m": "pitwall.write",
+            "v": 1,
+            "p": {
+              "type": "lap",
+              "lap": 4,
+              "channels": {
+                "speed": {
+                  "$bin": "0000c03f"
+                }
+              }
+            },
+            "dl": 30000,
+            "ik": "examplesim/2b9f1c/lap/4"
+          }
+        }
+      ]
+    },
+    {
+      "name": "res_ok",
+      "description": "a successful response",
+      "hex": "270000000184a174a3726573a2696407a26f6bc3a17282aa73657373696f6e5f69641ca673746f726564c3",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": 7,
+            "ok": true,
+            "r": {
+              "session_id": 28,
+              "stored": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "res_error",
+      "description": "an error response with details and a retry hint",
+      "hex": "6c0000000184a174a3726573a2696408a26f6bc2a16584a4636f6465b067616d655f6e6f745f72756e6e696e67a36d7367ba4578616d706c6553696d206973206e6f742072756e6e696e672ea764657461696c7381a373696daa6578616d706c6573696da872657472795f6d73cd07d0",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": 8,
+            "ok": false,
+            "e": {
+              "code": "game_not_running",
+              "msg": "ExampleSim is not running.",
+              "details": {
+                "sim": "examplesim"
+              },
+              "retry_ms": 2000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "res_big_id",
+      "description": "ids are unsigned 64-bit: echo them exactly",
+      "hex": "460000000184a174a3726573a26964cf0020000000000001a26f6bc2a16582a4636f6465ae756e6b6e6f776e5f6d6574686f64a36d7367b2756e6b6e6f776e206d6574686f6420612e62",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": {
+              "$int": "9007199254740993"
+            },
+            "ok": false,
+            "e": {
+              "code": "unknown_method",
+              "msg": "unknown method a.b"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "prog",
+      "description": "progress of a long request, with a new deadline",
+      "hex": "200000000184a174a470726f67a2696409a16482a473686f7402a26f6606a2646ccd3a98",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "prog",
+            "id": 9,
+            "d": {
+              "shot": 2,
+              "of": 6
+            },
+            "dl": 15000
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancel",
+      "description": "the caller gave up",
+      "hex": "0f0000000182a174a663616e63656ca2696409",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "cancel",
+            "id": 9
+          }
+        }
+      ]
+    },
+    {
+      "name": "sub",
+      "description": "subscribe to a state channel",
+      "hex": "250000000184a174a3737562a269640aa26368b270697477616c6c2e636f6e6e6563746f7273a17601",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "sub",
+            "id": 10,
+            "ch": "pitwall.connectors",
+            "v": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "sub_res_state",
+      "description": "a state subscription answered with its snapshot",
+      "hex": "5a0000000184a174a3726573a269640aa26f6bc3a17285a373696401a46b696e64a57374617465a373657100a4736e617081a9636f6e6e656374656491b4636f6e6e6563746f722d6578616d706c6573696da27473cf000000012a05f200",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": 10,
+            "ok": true,
+            "r": {
+              "sid": 1,
+              "kind": "state",
+              "seq": 0,
+              "snap": {
+                "connected": [
+                  "connector-examplesim"
+                ]
+              },
+              "ts": 5000000000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "sub_res_stream",
+      "description": "a stream subscription answered with its layout",
+      "hex": "9f0000000184a174a3726573a269640ba26f6bc3a17284a373696402a46b696e64a673747265616da373657100a66c61796f757483a473697a6520a66669656c64739792a973706565645f6b6d68a366333292a87468726f74746c65a366333292a56272616b65a366333292a467656172a2693892a5666c616773a2753892a372706da375313693a6747972655f63a366333204a46e616d65a974656c656d65747279",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": 11,
+            "ok": true,
+            "r": {
+              "sid": 2,
+              "kind": "stream",
+              "seq": 0,
+              "layout": {
+                "size": 32,
+                "fields": [
+                  [
+                    "speed_kmh",
+                    "f32"
+                  ],
+                  [
+                    "throttle",
+                    "f32"
+                  ],
+                  [
+                    "brake",
+                    "f32"
+                  ],
+                  [
+                    "gear",
+                    "i8"
+                  ],
+                  [
+                    "flags",
+                    "u8"
+                  ],
+                  [
+                    "rpm",
+                    "u16"
+                  ],
+                  [
+                    "tyre_c",
+                    "f32",
+                    4
+                  ]
+                ],
+                "name": "telemetry"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "evt",
+      "description": "an event (the hot path builds it from pre-packed parts)",
+      "hex": "360000000185a174a3657674a373696401a373657103a27473cf000000012a05f27ba16482a36c617004a674696d655f73cb4056cef9db22d0e5",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "evt",
+            "sid": 1,
+            "seq": 3,
+            "ts": 5000000123,
+            "d": {
+              "lap": 4,
+              "time_s": 91.234
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unsub",
+      "description": "the subscriber ends its subscription",
+      "hex": "0f0000000182a174a5756e737562a373696401",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "unsub",
+            "sid": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "end",
+      "description": "the owner ends a subscription",
+      "hex": "410000000184a174a3656e64a373696401a4636f6465aa6f7665726c6f61646564a36d7367bf7375627363726962657220746f6f20736c6f773a2071756575652066756c6c",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "end",
+            "sid": 1,
+            "code": "overloaded",
+            "msg": "subscriber too slow: queue full"
+          }
+        }
+      ]
+    },
+    {
+      "name": "decl",
+      "description": "new declarations replace the old ones",
+      "hex": "3c0000000182a174a46465636ca46465636c82a76d6574686f647381b4636f6e6e6563746f722e6c6976655f6672616d6581a1769101a86368616e6e656c7380",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "decl",
+            "decl": {
+              "methods": {
+                "connector.live_frame": {
+                  "v": [
+                    1
+                  ]
+                }
+              },
+              "channels": {}
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bye",
+      "description": "closing",
+      "hex": "320000000183a174a3627965a4636f6465ad7368757474696e675f646f776ea36d7367b274686520656e64706f696e742073746f7073",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "bye",
+            "code": "shutting_down",
+            "msg": "the endpoint stops"
+          }
+        }
+      ]
+    },
+    {
+      "name": "stream_sample",
+      "description": "a stream sample (kind 2) for the telemetry layout, with the dropped flag",
+      "hex": "35000000020200000029000000e7f5052a0100000001000000008054430000803f000000000500e81c0000aa420000ab420000ac420000ad42",
+      "layout": {
+        "size": 32,
+        "fields": [
+          [
+            "speed_kmh",
+            "f32"
+          ],
+          [
+            "throttle",
+            "f32"
+          ],
+          [
+            "brake",
+            "f32"
+          ],
+          [
+            "gear",
+            "i8"
+          ],
+          [
+            "flags",
+            "u8"
+          ],
+          [
+            "rpm",
+            "u16"
+          ],
+          [
+            "tyre_c",
+            "f32",
+            4
+          ]
+        ],
+        "name": "telemetry"
+      },
+      "frames": [
+        {
+          "kind": 2,
+          "sid": 2,
+          "seq": 41,
+          "t_ns": 5000000999,
+          "flags": 1,
+          "body": "008054430000803f000000000500e81c0000aa420000ab420000ac420000ad42",
+          "values": {
+            "speed_kmh": 212.5,
+            "throttle": 1.0,
+            "brake": 0.0,
+            "gear": 5,
+            "flags": 0,
+            "rpm": 7400,
+            "tyre_c": [
+              85.0,
+              85.5,
+              86.0,
+              86.5
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "chunked_with_stream",
+      "description": "a 125-byte message in 40-byte chunks (kind 3), a stream sample between the first and second chunk",
+      "hex": "31000000037d0000000000000085a174a3726571a269640ca16db570697477616c6c2e73657475705f63617074757265a17601a17035000000020200000029000000e7f5052a0100000001000000008054430000803f000000000500e81c0000aa420000ab420000ac420000ad4231000000037d0000002800000082a3706e67c440000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2031000000037d000000500000002122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fa6736f75726365a6620e000000037d000000780000007574746f6e",
+      "frames": [
+        {
+          "kind": 2,
+          "sid": 2,
+          "seq": 41,
+          "t_ns": 5000000999,
+          "flags": 1,
+          "body": "008054430000803f000000000500e81c0000aa420000ab420000ac420000ad42"
+        },
+        {
+          "kind": 1,
+          "message": {
+            "t": "req",
+            "id": 12,
+            "m": "pitwall.setup_capture",
+            "v": 1,
+            "p": {
+              "png": {
+                "$bin": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+              },
+              "source": "button"
+            }
+          }
+        }
+      ],
+      "chunks": [
+        {
+          "total": 125,
+          "offset": 0,
+          "length": 40
+        },
+        {
+          "total": 125,
+          "offset": 40,
+          "length": 40
+        },
+        {
+          "total": 125,
+          "offset": 80,
+          "length": 40
+        },
+        {
+          "total": 125,
+          "offset": 120,
+          "length": 5
+        }
+      ]
+    },
+    {
+      "name": "reserved_kind",
+      "description": "kinds 0x80-0xFF are skipped",
+      "hex": "07000000806675747572650d0000000182a174a470696e67a2747301",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "ping",
+            "ts": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown_type_and_keys",
+      "description": "an unknown message type is ignored; unknown keys too",
+      "hex": "100000000182a174a8785f667574757265a161011d0000000183a174a470696e67a2747302ac7a7a5f6e65775f6669656c64920102",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "x_future",
+            "a": 1
+          },
+          "action": "ignore"
+        },
+        {
+          "kind": 1,
+          "message": {
+            "t": "ping",
+            "ts": 2,
+            "zz_new_field": [
+              1,
+              2
+            ]
+          },
+          "action": "answer pong ts 2"
+        }
+      ]
+    }
+  ]
+}
