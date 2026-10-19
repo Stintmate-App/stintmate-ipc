@@ -179,6 +179,9 @@ class Subscription:
         self.ended = threading.Event()
         self.end_code: str | None = None
         self.end_message = ""
+        self.pending: deque[Any] = deque()  # delivered, waiting for the callback
+        self.limit = 0
+        self.local_drops = 0
 
     def close(self) -> None:
         """Unsubscribe (``unsub``); no callback runs after this returns on the dispatch
@@ -737,15 +740,49 @@ class Peer:
             log.exception("subscription callback failed")
 
     def _deliver(self, sub: Subscription, item: Any) -> None:
+        """Hand ``item`` to the subscription's callback. ``inline``: now, on the reader.
+        ``thread``: through the connection's callback lane, with the same bounded-queue
+        rules as the owner (SPEC.md 12) so a slow callback never makes the reader stop or
+        memory grow: streams drop the oldest (the next sample says ``dropped``), state keeps
+        the latest, events end the subscription ``overloaded``."""
         if sub.deliver == "inline":
             self._run_cb(sub.callback, (item,))
-        else:
-            self._dispatch(self._deliver_checked, sub, item)
+            return
+        pending = sub.pending
+        if sub.kind == STATE and pending:
+            pending[-1] = item  # coalesce: the queued token delivers the latest value
+            return
+        if len(pending) >= sub.limit:
+            if sub.kind == STREAM:
+                pending.popleft()
+                item.dropped = True
+                sub.local_drops += 1
+                pending.append(item)
+                return
+            pending.clear()
+            self._local_overload(sub)
+            return
+        pending.append(item)
+        self._schedule(self._lane.offer(partial(self._deliver_one, sub)))
 
     @staticmethod
-    def _deliver_checked(sub: Subscription, item: Any) -> None:
+    def _deliver_one(sub: Subscription) -> None:
+        try:
+            item = sub.pending.popleft()
+        except IndexError:
+            return  # dropped or coalesced
         if not sub.ended.is_set():
             sub.callback(item)
+
+    def _local_overload(self, sub: Subscription) -> None:
+        with self._lock:
+            known = self._insubs.pop(sub.sid, None) is not None
+        if known:
+            try:
+                self._enqueue(("f", wire.message_frame({"t": "unsub", "sid": sub.sid})))
+            except NotConnected:
+                pass
+            self._end_sub(sub, E.OVERLOADED, "callback too slow: local queue full")
 
     # ------------------------------------------------------------------ receiving
 
@@ -879,6 +916,13 @@ class Peer:
                 spc._finish(error=ProtocolError(f"bad stream layout: {exc}"))
                 self._protocol_error(f"bad stream layout: {exc}")
                 return
+        if sub.kind == STREAM:
+            cd = self.decl.channels.get(sub.channel)
+            sub.limit = max(64, int(cd.rate_hz)) if cd is not None and cd.rate_hz else 256
+        elif sub.kind == STATE:
+            sub.limit = 1
+        else:
+            sub.limit = self.node.event_queue
         with self._lock:
             self._insubs[sub.sid] = sub
         if sub.kind == STATE:

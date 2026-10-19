@@ -330,7 +330,7 @@ class _Node:
                  heartbeat_ms: int = DEFAULT_HEARTBEAT_MS,
                  max_frame: int = wire.DEFAULT_MAX_FRAME,
                  max_message: int = wire.DEFAULT_MAX_MESSAGE, event_queue: int = 1024,
-                 event_queue_bytes: int = 8 * 1024 * 1024,
+                 event_queue_bytes: int = 8 * 1024 * 1024, max_inflight: int = 1024,
                  features: Iterable[str] = ()) -> None:
         if max_frame < wire.MIN_MAX_FRAME:
             raise ValueError(f"max_frame must be >= {wire.MIN_MAX_FRAME}")
@@ -343,6 +343,7 @@ class _Node:
         self.max_message = max_message
         self.event_queue = event_queue
         self.event_queue_bytes = event_queue_bytes
+        self.max_inflight = max_inflight
         self.features = list(features)
         self._methods: dict[str, _Method] = {}
         self._channels: dict[str, Channel] = {}
@@ -544,7 +545,13 @@ class _Node:
         with peer._lock:
             if rid in peer._inbound:
                 raise ProtocolError(f"request id {rid} is already in flight")
-            peer._inbound[rid] = ctx
+            busy = len(peer._inbound) >= self.max_inflight
+            if not busy:
+                peer._inbound[rid] = ctx
+        if busy:
+            self._reply_error(peer, rid, RemoteError(
+                E.BUSY, f"more than {self.max_inflight} requests in flight", retry_ms=100))
+            return
         job = self._job(m, ctx)
         if m.inline:
             job()
