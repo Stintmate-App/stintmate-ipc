@@ -137,14 +137,15 @@ class FrameParser:
         out: list[tuple[int, bytes]] = []
         pos = 0
         end = len(src)
-        while end - pos >= 5:
-            length, kind = HEADER.unpack_from(src, pos)
+        while end - pos >= 4:
+            length = int.from_bytes(src[pos:pos + 4], "little")
             if length < 1:
                 raise ProtocolError("frame length 0")
             if length > self.max_frame:
                 raise ProtocolError(f"frame of {length} bytes exceeds max_frame {self.max_frame}")
             if end - pos - 4 < length:
                 break
+            kind = src[pos + 4]
             start = pos + 5
             stop = pos + 4 + length
             pos = stop
