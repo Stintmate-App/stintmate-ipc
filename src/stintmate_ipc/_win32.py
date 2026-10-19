@@ -306,9 +306,11 @@ class PipeHandle:
                     elif e != ERROR_IO_PENDING:
                         raise PipeClosed(f"read failed ({e})")
                     else:
-                        if timeout_ms != INFINITE and                                 _WaitForSingleObject(ov.hEvent, timeout_ms) == WAIT_TIMEOUT:
+                        if timeout_ms != INFINITE and \
+                                _WaitForSingleObject(ov.hEvent, timeout_ms) == WAIT_TIMEOUT:
                             _CancelIoEx(h, self._rovp)
-                            if _GetOverlappedResult(h, self._rovp, self._gotp, True)                                     and self._got.value:
+                            if _GetOverlappedResult(h, self._rovp, self._gotp, True) \
+                                    and self._got.value:
                                 return self._rview[:self._got.value].tobytes()
                             raise TimeoutError("no data")
                         if not _GetOverlappedResult(h, self._rovp, self._gotp, True):
@@ -476,26 +478,23 @@ class Listener:
         return h
 
     def _loop(self) -> None:
-        first = True
+        # The next instance is created *before* a connected one is handed over, so the name
+        # always has an instance: a client that connects, leaves and comes back at once
+        # must never find the pipe gone (ERROR_FILE_NOT_FOUND).
         ov = OVERLAPPED()
         ov.hEvent = _event()
         got = wintypes.DWORD()
         handles = (HANDLE * 2)(ov.hEvent, self._stop)
+        h = 0
         try:
-            while not self._stopping:
-                try:
-                    h = self._instance(first)
-                except PipeError as exc:
-                    if first:
-                        self._error = exc
-                        self._ready.set()
-                        return
-                    log.error("Cannot create a pipe instance: %s", exc)
-                    if _WaitForSingleObject(self._stop, 1000) == WAIT_OBJECT_0:
-                        return
-                    continue
-                first = False
+            try:
+                h = self._instance(True)
+            except PipeError as exc:
+                self._error = exc
                 self._ready.set()
+                return
+            self._ready.set()
+            while not self._stopping:
                 _ResetEvent(ov.hEvent)
                 connected = bool(_ConnectNamedPipe(h, ctypes.byref(ov)))
                 if not connected:
@@ -507,20 +506,32 @@ class Listener:
                         if r != WAIT_OBJECT_0:  # stop
                             _CancelIoEx(h, ctypes.byref(ov))
                             _GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(got), True)
-                            _CloseHandle(h)
                             return
                         connected = bool(_GetOverlappedResult(h, ctypes.byref(ov),
                                                               ctypes.byref(got), False))
-                if not connected or self._stopping:
+                if self._stopping:
+                    return
+                nxt = 0
+                while not nxt and not self._stopping:
+                    try:
+                        nxt = self._instance(False)
+                    except PipeError as exc:
+                        log.error("Cannot create a pipe instance: %s", exc)
+                        if _WaitForSingleObject(self._stop, 1000) == WAIT_OBJECT_0:
+                            break
+                if connected:
+                    conn = PipeHandle(h, server_side=True)
+                    try:
+                        self.on_connection(conn)
+                    except Exception:  # noqa: BLE001
+                        log.exception("on_connection failed")
+                        conn.close()
+                else:
                     _CloseHandle(h)
-                    continue
-                conn = PipeHandle(h, server_side=True)
-                try:
-                    self.on_connection(conn)
-                except Exception:  # noqa: BLE001
-                    log.exception("on_connection failed")
-                    conn.close()
+                h = nxt
         finally:
+            if h:
+                _CloseHandle(h)
             _CloseHandle(ov.hEvent)
 
     def start(self) -> Listener:

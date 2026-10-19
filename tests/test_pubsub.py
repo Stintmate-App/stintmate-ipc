@@ -92,9 +92,11 @@ def test_slow_callback_overload_ends_locally_and_client_resubscribes(endpoint, c
     wait_for(lambda: ch.subscriber_count == 1)
     for i in range(500):
         ch.publish({"i": i})
-    wait_for(lambda: ends == ["overloaded"])
+    first = cs.current
+    wait_for(lambda: first.end_code == "overloaded")
     wait_for(lambda: ch.subscriber_count == 0)  # the unsub reached the owner
     gate.set()
+    wait_for(lambda: ends == ["overloaded"])  # on_end runs after the callback in its lane
     # The Client subscribes again after 1 s.
     wait_for(lambda: ch.subscriber_count == 1, timeout=5)
     assert cs.subscribed.is_set()

@@ -152,6 +152,7 @@ def test_anything_before_auth_is_refused(endpoint, key, pipe_name):
     try:
         rc.recv_msg(skip=())
         rc.send({"t": "req", "id": 1, "m": "a.b"})
+        assert rc.recv_msg(timeout=3)["code"] == "protocol_error"
         with pytest.raises(Closed):
             rc.recv_msg(timeout=3)
     finally:
@@ -164,6 +165,7 @@ def test_handshake_frames_are_limited(endpoint, key, pipe_name):
     try:
         rc.recv_msg(skip=())
         rc.send_frame(wire.HEADER.pack(wire.HANDSHAKE_MAX_FRAME + 1, 1))
+        assert rc.recv_msg(timeout=3)["code"] == "protocol_error"
         with pytest.raises(Closed):
             rc.recv_msg(timeout=3)
     finally:

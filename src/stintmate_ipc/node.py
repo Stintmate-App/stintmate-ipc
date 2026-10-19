@@ -703,10 +703,16 @@ def server_handshake(node: _Node, pipe: _win32.PipeHandle, short: str, run: str,
     parser = wire.FrameParser(wire.HANDSHAKE_MAX_FRAME, wire.HANDSHAKE_MAX_FRAME)
     early: list[tuple[int, bytes]] = []
     try:
-        auth = _read_handshake(pipe, parser, deadline, early)
+        try:
+            auth = _read_handshake(pipe, parser, deadline, early)
+        except HandshakeError as exc:
+            if exc.code == E.PROTOCOL_ERROR:
+                _bye(pipe, E.PROTOCOL_ERROR, exc.message)
+            raise
         if auth["t"] == "bye":
             raise HandshakeError(str(auth.get("code", E.NORMAL)), str(auth.get("msg", "")))
         if auth["t"] != "auth":
+            _bye(pipe, E.PROTOCOL_ERROR, f"expected auth, got {auth['t']}")
             raise HandshakeError(E.PROTOCOL_ERROR, f"expected auth, got {auth['t']}")
         version = auth.get("v")
         if version not in wire.SUPPORTED_VERSIONS:
