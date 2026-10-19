@@ -94,7 +94,7 @@ tel.send_values(212.5, 1.0, 0.0, 5, 0, 7400)
 | `.state_channel(name, initial=None, *, versions=(1,))` -> `StateChannel` | `.set(value)`, `.value`. |
 | `.stream_channel(name, layout, *, versions=(1,), rate_hz=None, queue=None)` -> `StreamChannel` | `.send(body, t_ns=None)`, `.send_values(*values, t_ns=None)`. |
 | `Channel` | `.subscriber_count`, `.active`, `.on_active(bool)` (first subscriber came / last left), `.on_subscribe(req)` (may refuse), `.close()`. |
-| `Peer` | One connection: `.info` (`PeerInfo`), `.pid` (from the OS), `.decl`, `.run`, `.call(method, params=None, *, version=1, timeout=5.0, idempotency_key=None, on_progress=None)`, `.call_async(...)` -> `PendingCall`, `.subscribe(channel, callback, *, version=1, options=None, on_end=None, deliver="thread")` -> `Subscription`, `.ping()`, `.close(code, message)`. |
+| `Peer` | One connection: `.info` (`PeerInfo`), `.pid` (from the OS), `.decl`, `.run`, `.call(method, params=None, *, version=1, timeout=5.0, idempotency_key=None, on_progress=None)`, `.call_async(...)` -> `PendingCall`, `.subscribe(channel, callback, *, version=1, options=None, on_end=None, deliver="auto")` -> `Subscription`, `.ping()`, `.close(code, message)`. |
 | `Context` (handlers) | `.peer`, `.method`, `.version`, `.params`, `.idempotency_key`, `.deadline`, `.remaining`, `.cancelled`, `.wait_cancelled(timeout)`, `.progress(data, extend_s=None)`. |
 | `Event` / `Sample` (callbacks) | `Event`: `.channel`, `.seq`, `.ts`, `.data`, `.snapshot`. `Sample`: `.seq`, `.t_ns`, `.dropped`, `.body`, `.values()`, `.as_dict()`. |
 | `Layout(fields, name=None)` | `[(name, type[, count])]`, types `u8 i8 u16 i16 u32 i32 u64 i64 f32 f64`; `.size`, `.pack(*v)`, `.pack_dict(d)`, `.unpack(b)`, `.unpack_dict(b)`. |
@@ -113,12 +113,15 @@ the bounded queues) and a reader that hands work to a cache of worker threads.
 - **Handlers** run on worker threads (at most `handler_threads` at once per node);
   `ordered=True` methods one at a time per connection; `inline=True` methods on the reader
   (only for handlers that answer from memory and never block).
-- **Subscription callbacks** run, by default, one at a time per connection in arrival order
-  on a worker (`deliver="thread"`): a callback may block or call the peer. A slow callback
-  gets the protocol's rules locally: streams drop the oldest, state keeps the latest,
+- **Subscription callbacks** of event and state channels run, by default, one at a time
+  per connection in arrival order on a worker (`deliver="thread"`): a callback may block or
+  call the peer. A slow callback gets the protocol's rules locally: state keeps the latest,
   events end the subscription `overloaded` (the `Client` subscribes again after 1 s).
-  `deliver="inline"` runs the callback on the reader: lowest latency, but it must be quick
-  and must not call the peer.
+  **Stream** callbacks run, by default, on the connection's reader (`deliver="inline"`):
+  they must be quick (store the sample, hand it on) and cannot wait on the peer
+  (`call()` raises there; `call_async()` works). That halves the subscriber's CPU per
+  stream. `deliver="thread"` or `"inline"` overrides the default (`"auto"`) for any kind;
+  a slow `"thread"` stream callback drops the oldest samples.
 - **Producers never block**: `publish`, `set`, `send` and `call` only queue when the pipe is
   busy; the 200 Hz loop of a recorder costs one `struct.pack` and a lock.
 

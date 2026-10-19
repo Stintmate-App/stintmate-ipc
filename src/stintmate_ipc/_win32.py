@@ -338,7 +338,7 @@ class PipeHandle:
         h = self._enter()
         try:
             self._wdata = data
-            self._wbase = ctypes.cast(ctypes.c_char_p(data), ctypes.c_void_p).value
+            self._wbase = 0  # the address, only needed for a partial write
             self._woff = 0
             if self._issue(h):
                 return False
@@ -355,8 +355,14 @@ class PipeHandle:
         ov = self._wov
         total = len(self._wdata)
         while self._woff < total:
-            if not _WriteFile(h, self._wbase + self._woff, total - self._woff, None,
-                              self._wovp):
+            if self._woff == 0:
+                buf: object = self._wdata  # ctypes passes the bytes' own buffer
+            else:
+                if not self._wbase:
+                    self._wbase = ctypes.cast(ctypes.c_char_p(self._wdata),
+                                              ctypes.c_void_p).value
+                buf = self._wbase + self._woff
+            if not _WriteFile(h, buf, total - self._woff, None, self._wovp):
                 e = ctypes.get_last_error()
                 if e == ERROR_IO_PENDING:
                     return True

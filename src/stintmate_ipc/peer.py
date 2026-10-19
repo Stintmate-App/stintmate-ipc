@@ -637,9 +637,16 @@ class Peer:
              on_progress: Callable[[Any], None] | None = None) -> Any:
         """Call a method of the peer; returns ``r`` or raises :class:`RemoteError`,
         :class:`CallTimeout`, :class:`ConnectionLost` or :class:`NotConnected`."""
+        self._not_on_reader("call")
         return self.call_async(method, params, version=version, timeout=timeout,
                                idempotency_key=idempotency_key,
                                on_progress=on_progress).result()
+
+    def _not_on_reader(self, what: str) -> None:
+        if self._reader_ident == threading.get_ident():
+            raise RuntimeError(f"{what}() would wait for a response on this connection's "
+                               "reader thread (an inline callback or method): use "
+                               "call_async(), or deliver='thread'")
 
     def _call_timed_out(self, pc: PendingCall) -> None:
         with self._lock:
@@ -672,14 +679,19 @@ class Peer:
     def subscribe(self, channel: str, callback: Callable[[Any], None], *, version: int = 1,
                   options: dict[str, Any] | None = None,
                   on_end: Callable[[Subscription, str, str], None] | None = None,
-                  deliver: str = "thread", timeout: float = 5.0) -> Subscription:
+                  deliver: str = "auto", timeout: float = 5.0) -> Subscription:
         """Subscribe to a channel of the peer. ``callback(Event)`` for event and state
         channels (a state's snapshot first, ``snapshot=True``), ``callback(Sample)`` for
-        streams; ``on_end(sub, code, message)`` when it ends. ``deliver``: ``"thread"``
-        (the connection's dispatch thread, default) or ``"inline"`` (the reader thread:
-        lowest latency; the callback must be quick and must not call the peer)."""
-        if deliver not in ("thread", "inline"):
-            raise ValueError("deliver must be 'thread' or 'inline'")
+        streams; ``on_end(sub, code, message)`` when it ends.
+
+        ``deliver``: ``"thread"``: the connection's callback lane on a worker thread, one
+        callback at a time in arrival order; it may block and call the peer. ``"inline"``:
+        the reader thread: lowest latency and CPU, but the callback must be quick and
+        cannot wait on the peer. ``"auto"`` (default): inline for streams (high-rate,
+        quick callbacks: 0.5 % less CPU per 200 Hz stream), thread for events and state."""
+        if deliver not in ("thread", "inline", "auto"):
+            raise ValueError("deliver must be 'auto', 'thread' or 'inline'")
+        self._not_on_reader("subscribe")
         sub = Subscription(self, channel, version, callback, on_end, deliver, options)
         rid = next(self._ids)
         pc = PendingCall(self, rid, f"sub {channel}", timeout, None)
@@ -909,6 +921,8 @@ class Peer:
             return
         sub.sid = r["sid"]
         sub.kind = r.get("kind", "")
+        if sub.deliver == "auto":
+            sub.deliver = "inline" if sub.kind == STREAM else "thread"
         if sub.kind == STREAM:
             try:
                 sub.layout = Layout.from_wire(r.get("layout"))

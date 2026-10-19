@@ -1115,7 +1115,7 @@ class Client(_Node):
     def subscribe(self, channel: str, callback: Callable[[Any], None], *, version: int = 1,
                   options: dict[str, Any] | None = None,
                   on_end: Callable[[ClientSubscription, str, str], None] | None = None,
-                  deliver: str = "thread") -> ClientSubscription:
+                  deliver: str = "auto") -> ClientSubscription:
         """Subscribe now if connected, and again after every reconnect. Errors of a
         subscription attempt are kept in ``.error`` (e.g. ``unknown_channel``)."""
         cs = ClientSubscription(self, channel, callback, version, options, on_end, deliver)

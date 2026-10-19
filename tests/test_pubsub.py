@@ -177,7 +177,7 @@ def test_stream_drops_oldest_for_a_slow_subscriber(endpoint, client):
         got.append((x.seq, x.dropped))
         gate.wait(5)
 
-    c.subscribe("t.big", slow)
+    c.subscribe("t.big", slow, deliver="thread")
     wait_for(lambda: s.subscriber_count == 1)
     time.sleep(0.1)
     body = big.pack(*([0.5] * 4096))
@@ -297,3 +297,27 @@ def test_callbacks_may_call_the_peer(endpoint, client):
     for i in range(5):
         ch.publish(i)
     wait_for(lambda: out == [0, 1, 2, 3, 4])
+
+
+def test_inline_callbacks_cannot_wait_on_their_own_reader(endpoint, client):
+    ep = endpoint()
+    ch = ep.event_channel("t.ev")
+    ep.method("t.echo", lambda ctx, p: p)
+    ep.start()
+    c = client()
+    peer = c.connect(5)
+    errors = []
+
+    def cb(e):
+        try:
+            peer.call("t.echo", 1)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        pc = peer.call_async("t.echo", 2)  # allowed: it does not wait
+        pc.add_done_callback(lambda x: errors.append(x.result()))
+
+    peer.subscribe("t.ev", cb, deliver="inline")
+    wait_for(lambda: ch.subscriber_count == 1)
+    ch.publish(0)
+    wait_for(lambda: len(errors) == 2)
+    assert "reader thread" in errors[0] and errors[1] == 2
