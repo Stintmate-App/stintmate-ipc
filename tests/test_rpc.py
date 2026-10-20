@@ -277,3 +277,43 @@ def test_too_many_requests_in_flight_get_busy(endpoint, client):
     assert ei.value.code == "busy" and ei.value.retry_ms == 100
     gate.set()
     assert all(pc.result() for pc in calls[:3])
+
+
+@pytest.mark.parametrize("code", ["shutting_down", "writer_busy", "busy", "unavailable"])
+def test_retryable_errors_are_not_cached(endpoint, client, code):
+    ep = endpoint()
+    runs = []
+
+    @ep.method("t.store", idempotent=True)
+    def store(ctx, params):
+        runs.append(1)
+        if len(runs) == 1:
+            raise RemoteError(code, "not now")
+        return {"runs": len(runs)}
+
+    ep.start()
+    c = client()
+    c.connect(5)
+    with pytest.raises(RemoteError) as ei:
+        c.call("t.store", None, idempotency_key="k/1")
+    assert ei.value.code == code
+    assert c.call("t.store", None, idempotency_key="k/1") == {"runs": 2}
+    assert c.call("t.store", None, idempotency_key="k/1") == {"runs": 2}  # now cached
+
+
+def test_permanent_errors_stay_cached(endpoint, client):
+    ep = endpoint()
+    runs = []
+
+    @ep.method("t.store", idempotent=True)
+    def store(ctx, params):
+        runs.append(1)
+        raise RemoteError("bad_request", "no")
+
+    ep.start()
+    c = client()
+    c.connect(5)
+    for _ in range(2):
+        with pytest.raises(RemoteError):
+            c.call("t.store", None, idempotency_key="k/1")
+    assert len(runs) == 1

@@ -710,8 +710,10 @@ the owner was down) SHOULD carry an **idempotency key** `ik`.
   (laps stored in a database) that means as long as the data, so the key belongs in the
   same transaction as the write.
 - Errors that mean "not done, try later" (`busy`, `unavailable`, `timeout`, `cancelled`,
-  `overloaded`, `shutting_down`) do not consume the key: the operation may still be done
-  by a later repeat.
+  `overloaded`, `shutting_down`, and any application code the method documents as
+  retryable) do not consume the key: the operation may still be done by a later repeat.
+  An owner MUST NOT remember such an answer under the key: a repeat runs the operation
+  again. (The Python package does this for the codes above and `writer_busy`.)
 - A caller replaying a queue MUST replay requests of an `ordered` method in their original
   order and wait for each answer before sending the next when later ones depend on earlier
   ones.

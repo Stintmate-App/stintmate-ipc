@@ -114,6 +114,13 @@ class _Method:
         self.cache: IdempotencyCache | None = IdempotencyCache() if decl.idempotent else None
 
 
+# Error codes that mean "not done, try later": they never consume an idempotency key
+# (SPEC.md 10.4), so a repeat with the same key runs the handler again. ``writer_busy`` is
+# not a protocol code; it is the application code Pitwall's write method answers.
+NOT_CACHED_CODES = frozenset({E.BUSY, E.UNAVAILABLE, E.TIMEOUT, E.CANCELLED, E.OVERLOADED,
+                              E.SHUTTING_DOWN, "writer_busy"})
+
+
 class IdempotencyCache:
     """Results of idempotent requests by ``(peer app, method, ik)`` for this process's
     lifetime (SPEC.md 10.4): a retry after a reconnect gets the first result instead of a
@@ -151,8 +158,7 @@ class IdempotencyCache:
             raise
         with self._lock:
             self._running.pop(key, None)
-            if result[0] or result[1].code not in (E.BUSY, E.UNAVAILABLE, E.TIMEOUT,
-                                                   E.CANCELLED, E.OVERLOADED):
+            if result[0] or result[1].code not in NOT_CACHED_CODES:
                 self._done[key] = result
                 while len(self._done) > self.max_entries:
                     self._done.popitem(last=False)
