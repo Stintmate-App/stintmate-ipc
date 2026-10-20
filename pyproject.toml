@@ -11,7 +11,7 @@ classifiers = [
 ]
 
 [project.scripts]
-stintmate-ipc-check = "stintmate_ipc.check.cli:main"
+stintmate-ipc-check = "stintmate_ipc.check.cli:run"
 
 [dependency-groups]
 dev = ["pytest>=8"]

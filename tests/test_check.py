@@ -135,3 +135,34 @@ def test_cli_usage_errors(capsys, tmp_path):
     assert cli.main(["server", "x", "--key-file", str(tmp_path / "none")]) == 2
     assert "key file not found" in capsys.readouterr().err
     assert wire.PROTOCOL_VERSION == 2
+
+
+def _run_cli(*args, timeout=60):
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, "-m", "stintmate_ipc.check.cli", *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def test_cli_process_exits_cleanly(endpoint, key, pipe_name):
+    ep = endpoint()
+    ep.event_channel("t.ev")
+    ep.start()
+    r = _run_cli("server", pipe_name, "--key-hex", key.hex(), "--fast", "--listen", "0.3")
+    assert "Observed" in r.stdout and r.returncode in (0, 1)
+
+
+def test_cli_process_exits_when_the_endpoint_closes_first(endpoint, key, pipe_name):
+    ep = endpoint()
+    ep.event_channel("t.ev")
+    ep.state_channel("t.st", 1)
+    ep.start()
+    threading.Timer(0.3, ep.stop).start()
+    r = _run_cli("server", pipe_name, "--key-hex", key.hex(), "--listen", "0.5", "--json")
+    assert r.returncode == 1 and r.stdout.strip().startswith("{")
+
+
+def test_cli_client_mode_exits_when_no_client_comes(key, pipe_name):
+    r = _run_cli("client", pipe_name, "--key-hex", key.hex(), "--timeout", "1",
+                 "--serve", "0.2", "--reconnect", "0.5")
+    assert r.returncode == 1

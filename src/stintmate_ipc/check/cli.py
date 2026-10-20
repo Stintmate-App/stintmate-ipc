@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -114,5 +115,21 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
+def run() -> None:
+    """The console entry point. The checks leave pipe and worker threads behind when the
+    endpoint (or the client) goes away first; the report is printed by now, so flush it
+    and leave at once instead of waiting for them (the tool never hangs at exit)."""
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        code = 130
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    run()
