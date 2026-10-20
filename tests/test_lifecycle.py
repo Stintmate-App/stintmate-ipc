@@ -211,3 +211,22 @@ def test_on_connect_may_call_the_endpoint(endpoint, client):
     c.on_connect = lambda peer: got.append(c.call("t.hello"))
     c.connect(5)
     wait_for(lambda: got == ["hi"])
+
+
+def test_reconnect_delay_follows_the_bye_code(client):
+    c = client(reconnect=False)
+    assert c.reconnect_delay("shutting_down") == 0.25
+    assert c.reconnect_delay("shutting_down", 5) == 0.5
+    assert c.reconnect_delay("unauthorized") == 10.0
+    assert c.reconnect_delay("version_unsupported") is None
+    assert [c.reconnect_delay(None, n) for n in range(6)] == [0.25, 0.5, 1.0, 2.0, 2.0, 2.0]
+    assert c.reconnect_delay("protocol_error", 2) == 1.0
+
+
+def test_client_stops_after_version_unsupported(client, monkeypatch):
+    c = client()
+    monkeypatch.setattr(c, "reconnect_delay", lambda code, attempt=0: None)
+    c.start()
+    assert c._thread is not None
+    c._thread.join(5)  # no endpoint: the first failed attempt ends the loop
+    assert not c._thread.is_alive()

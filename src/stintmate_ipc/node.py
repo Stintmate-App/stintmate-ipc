@@ -1063,6 +1063,24 @@ class Client(_Node):
     ``pipe``: full path or short name of the endpoint (:func:`pipe_path`)."""
 
     BACKOFF = (0.25, 0.5, 1.0, 2.0)
+    UNAUTHORIZED_DELAY_S = 10.0
+
+    def reconnect_delay(self, code: str | None, attempt: int = 0) -> float | None:
+        """Seconds to wait (before jitter) before the next connection attempt, chosen by
+        the ``bye`` code that ended the last connection or attempt (SPEC.md 15.3), or
+        ``None`` to stop reconnecting. ``attempt`` counts the failures in a row.
+        ``shutting_down``: the server is restarting, try again soon (0.25 s, then 0.5 s);
+        ``unauthorized``: a wrong key does not fix itself, wait ``UNAUTHORIZED_DELAY_S``;
+        ``version_unsupported``: stop (``last_error`` has the reason); anything else
+        (including no code: the pipe broke, or the endpoint is not there) follows
+        ``BACKOFF``. Override to change the policy."""
+        if code == E.VERSION_UNSUPPORTED:
+            return None
+        if code == E.UNAUTHORIZED:
+            return self.UNAUTHORIZED_DELAY_S
+        if code == E.SHUTTING_DOWN:
+            return self.BACKOFF[min(attempt, 1)]
+        return self.BACKOFF[min(attempt, len(self.BACKOFF) - 1)]
 
     def __init__(self, pipe: str, info: PeerInfo, key: KeySource, *,
                  reconnect: bool = True, **kw: Any) -> None:
@@ -1128,13 +1146,11 @@ class Client(_Node):
                         log.exception("on_connect_error failed")
                 if not self.reconnect:
                     return
-                if isinstance(exc, HandshakeError) and exc.code == E.VERSION_UNSUPPORTED:
-                    log.error("%s speaks no protocol version this client speaks; giving up",
-                              self.short_name)
+                delay = self.reconnect_delay(
+                    exc.code if isinstance(exc, HandshakeError) else None, attempt)
+                if delay is None:
+                    log.error("%s: reconnecting stopped (%s)", self.short_name, exc)
                     return  # SPEC.md 15.3: stop and report (last_error)
-                delay = self.BACKOFF[min(attempt, len(self.BACKOFF) - 1)]
-                if isinstance(exc, HandshakeError) and exc.code == E.UNAUTHORIZED:
-                    delay = 10.0  # a wrong key does not fix itself in 2 s
                 attempt += 1
                 self._stop.wait(delay * random.uniform(0.8, 1.2))
                 continue
@@ -1148,7 +1164,12 @@ class Client(_Node):
             self._connected.clear()
             if not self.reconnect:
                 return
-            self._stop.wait(0.1)
+            delay = self.reconnect_delay(peer.close_code)
+            if delay is None:
+                log.error("%s: reconnecting stopped (bye %s)", self.short_name,
+                          peer.close_code)
+                return
+            self._stop.wait(delay * random.uniform(0.8, 1.2))
 
     def _peer_opened(self, peer: Peer) -> None:
         # Visible as connected before on_connect runs, so the hook may call the endpoint.

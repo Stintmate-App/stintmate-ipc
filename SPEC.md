@@ -1011,6 +1011,10 @@ A client that keeps a connection (a connector, a UI):
 
 - on `ERROR_FILE_NOT_FOUND`, a broken connection or `bye shutting_down` retries with
   backoff 0.25, 0.5, 1, 2 s, then every 2 s (RECOMMENDED), each delay with +-20 % jitter;
+- chooses the delay by the `bye` code that ended the last connection or attempt: after
+  `bye shutting_down` the server is restarting, so it retries soon (0.25 s, then 0.5 s,
+  with jitter) instead of climbing the backoff; any other code or no code follows the
+  backoff above;
 - after `bye unauthorized` waits at least 10 s between attempts (a wrong key does not fix
   itself) and tells its user which key file it read;
 - after `bye version_unsupported` SHOULD stop and report;
