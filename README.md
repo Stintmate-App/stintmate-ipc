@@ -41,7 +41,7 @@ from stintmate_ipc import Endpoint, KeyFile, Layout, PeerInfo, RemoteError, defa
 
 key = KeyFile(default_key_path(), create=True)          # <workspace>\ipc\key
 ep = Endpoint(PeerInfo("pitwall", name="Pitwall", version="0.9.0"), key,
-              pipe=r"\\.\pipe\stintmate-pitwall-leona")  # default: from app/process + user
+              pipe=r"\\.\pipe\stintmate-pitwall-alex")  # default: from app/process + user
 
 @ep.method("pitwall.write", ordered=True, idempotent=True)
 def write(ctx, params):                                  # runs on a handler thread

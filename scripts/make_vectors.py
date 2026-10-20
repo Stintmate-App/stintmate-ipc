@@ -25,7 +25,7 @@ OUT = Path(__file__).resolve().parent.parent / "vectors"
 KEY = bytes.fromhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 S_NONCE = bytes(range(0xA0, 0xC0))
 C_NONCE = bytes(range(0xC0, 0xE0))
-PIPE = "stintmate-pitwall-leona"
+PIPE = "stintmate-pitwall-alex"
 TEL = Layout([("speed_kmh", "f32"), ("throttle", "f32"), ("brake", "f32"), ("gear", "i8"),
               ("flags", "u8"), ("rpm", "u16"), ("tyre_c", "f32", 4)], name="telemetry")
 
@@ -183,8 +183,8 @@ def handshake() -> dict[str, Any]:
                     "closes; it sends no welcome",
         },
         "other_pipe": {
-            "pipe_short_name": "stintmate-voice-leona",
-            "client_mac": client_mac(KEY, 2, S_NONCE, C_NONCE, "stintmate-voice-leona").hex(),
+            "pipe_short_name": "stintmate-voice-alex",
+            "client_mac": client_mac(KEY, 2, S_NONCE, C_NONCE, "stintmate-voice-alex").hex(),
             "note": "the MAC binds the pipe name: an auth for one endpoint fails on another",
         },
     }

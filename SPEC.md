@@ -186,8 +186,8 @@ pipe path  = "\\.\pipe\" short name
 | `process` | `^[a-z0-9][a-z0-9_-]{0,31}$`, OPTIONAL: which process of a multi-process app (`radio`, `ui`, `recorder`). |
 | `user` | The Windows user name of the server process (`GetUserNameW`) with ASCII letters `A`-`Z` lowercased and every other character unchanged. (ASCII-only lowercasing is the same in every language; full Unicode lowercasing is not.) |
 
-Examples: `\\.\pipe\stintmate-pitwall-leona`, `\\.\pipe\stintmate-voice-radio-leona`,
-`\\.\pipe\stintmate-connector-ams2-recorder-leona`.
+Examples: `\\.\pipe\stintmate-pitwall-alex`, `\\.\pipe\stintmate-voice-radio-alex`,
+`\\.\pipe\stintmate-connector-ams2-recorder-alex`.
 
 - Implementations MUST build names from their parts and MUST NOT parse a name back into
   parts (`a-b` + `c` and `a` + `b-c` give the same name; the registry and the handshake
@@ -226,7 +226,7 @@ No workspace means no key file: the program cannot connect (8.1) and SHOULD say 
 `<workspace>\ipc\endpoints\<endpoint-id>.json`, one file per running endpoint:
 
 ```json
-{"schema": 1, "endpoint": "pitwall", "pipe": "\\\\.\\pipe\\stintmate-pitwall-leona",
+{"schema": 1, "endpoint": "pitwall", "pipe": "\\\\.\\pipe\\stintmate-pitwall-alex",
  "app": "pitwall", "process": null, "pid": 4242, "run": "5f1c2a9be03d4471",
  "versions": [2], "started_at": "2026-10-20T18:00:00+00:00", "name": "Pitwall",
  "version": "0.9.0"}
@@ -506,7 +506,7 @@ server_mac = HMAC-SHA256(key, "stintmate-ipc/" V " server" 0x00 || c_nonce || s_
 - `V` is the negotiated version in decimal ASCII (`2`): `"stintmate-ipc/2 client"` then one
   zero byte.
 - `name` is the endpoint's **short name** as UTF-8 bytes, lowercase, without
-  `\\.\pipe\` (`stintmate-pitwall-leona`). Binding it means an `auth` captured on one
+  `\\.\pipe\` (`stintmate-pitwall-alex`). Binding it means an `auth` captured on one
   endpoint is useless on another.
 - `||` is concatenation of raw bytes; the nonces are the 32 raw bytes.
 - MACs MUST be compared in constant time (`CryptographicOperations.FixedTimeEquals`,

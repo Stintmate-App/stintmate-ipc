@@ -95,9 +95,9 @@ def test_default_key_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_names():
     assert naming.ascii_lower("LeÓna") == "leÓna"
-    assert naming.short_name("pitwall", user="Leona") == "stintmate-pitwall-leona"
-    assert naming.pipe_path("voice", "radio", user="leona") == \
-        "\\\\.\\pipe\\stintmate-voice-radio-leona"
+    assert naming.short_name("pitwall", user="Alex") == "stintmate-pitwall-alex"
+    assert naming.pipe_path("voice", "radio", user="alex") == \
+        "\\\\.\\pipe\\stintmate-voice-radio-alex"
     assert naming.short_name("connector-ams2", "recorder", user="x") == \
         "stintmate-connector-ams2-recorder-x"
     for bad in ("", "Pitwall", "-x", "a" * 49, "a.b"):

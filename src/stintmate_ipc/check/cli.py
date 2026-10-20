@@ -5,7 +5,7 @@
     stintmate-ipc-check list [--workspace <dir>]         # endpoints in the registry
     stintmate-ipc-check keygen <path>                    # create a key file (if missing)
 
-``<pipe>``: ``\\\\.\\pipe\\stintmate-...`` or the short name (``stintmate-pitwall-leona``).
+``<pipe>``: ``\\\\.\\pipe\\stintmate-...`` or the short name (``stintmate-pitwall-alex``).
 The key defaults to ``<workspace>\\ipc\\key``. Exit status 0 when every check passed (warnings
 allowed), 1 when one failed, 2 on a usage error.
 """
