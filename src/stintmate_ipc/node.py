@@ -107,11 +107,13 @@ Handler = Callable[[Context, Any], Any]
 
 
 class _Method:
-    def __init__(self, decl: MethodDecl, handler: Handler, inline: bool) -> None:
+    def __init__(self, decl: MethodDecl, handler: Handler, inline: bool,
+                 cache: bool = True, ttl: float | None = None) -> None:
         self.decl = decl
         self.handler = handler
         self.inline = inline
-        self.cache: IdempotencyCache | None = IdempotencyCache() if decl.idempotent else None
+        self.cache: IdempotencyCache | None = (
+            IdempotencyCache(ttl=ttl) if decl.idempotent and cache else None)
 
 
 # Error codes that mean "not done, try later": they never consume an idempotency key
@@ -126,21 +128,25 @@ class IdempotencyCache:
     lifetime (SPEC.md 10.4): a retry after a reconnect gets the first result instead of a
     second execution. Durable deduplication across restarts is the application's job."""
 
-    def __init__(self, max_entries: int = 4096) -> None:
+    def __init__(self, max_entries: int = 4096, ttl: float | None = None) -> None:
         self.max_entries = max_entries
+        self.ttl = ttl  # seconds an answer is remembered; None: for the process lifetime
         self._lock = threading.Lock()
-        self._done: OrderedDict[tuple[str, str, str], tuple[bool, Any]] = OrderedDict()
+        self._done: OrderedDict[tuple[str, str, str], tuple[bool, Any, float]] = OrderedDict()
         self._running: dict[tuple[str, str, str], threading.Event] = {}
 
     def run(self, key: tuple[str, str, str], fn: Callable[[], Any]) -> Any:
         while True:
             with self._lock:
-                if key in self._done:
-                    ok, value = self._done[key]
+                entry = self._done.get(key)
+                if entry is not None and self.ttl is not None                         and time.monotonic() - entry[2] >= self.ttl:
+                    del self._done[key]
+                    entry = None
+                if entry is not None:
                     self._done.move_to_end(key)
-                    if ok:
-                        return value
-                    raise value
+                    if entry[0]:
+                        return entry[1]
+                    raise entry[1]
                 ev = self._running.get(key)
                 if ev is None:
                     ev = self._running[key] = threading.Event()
@@ -159,7 +165,7 @@ class IdempotencyCache:
         with self._lock:
             self._running.pop(key, None)
             if result[0] or result[1].code not in NOT_CACHED_CODES:
-                self._done[key] = result
+                self._done[key] = (*result, time.monotonic())
                 while len(self._done) > self.max_entries:
                     self._done.popitem(last=False)
         ev.set()
@@ -374,22 +380,32 @@ class _Node:
 
     def method(self, name: str, handler: Handler | None = None, *,
                versions: Iterable[int] = (1,), ordered: bool = False,
-               idempotent: bool = False, doc: str | None = None,
+               idempotent: bool = False, idempotency_cache: bool = True,
+               idempotency_ttl: float | None = None, doc: str | None = None,
                params: dict[str, Any] | None = None, result: dict[str, Any] | None = None,
                inline: bool = False) -> Any:
         """Offer a method; ``handler(ctx, params) -> result`` runs on a pool thread
         (``ordered``: one at a time per connection, in arrival order; ``inline``: on the
         connection's reader thread, for handlers that answer from memory in microseconds
         and never block or call the peer). Usable as a decorator. Raise
-        :class:`RemoteError` from the handler to answer an error."""
+        :class:`RemoteError` from the handler to answer an error.
+
+        ``idempotent`` declares the method idempotent (SPEC.md 10.4). By default the
+        endpoint remembers the answers by ``ik`` for the process lifetime;
+        ``idempotency_cache=False`` declares it but keeps no cache (the handler
+        deduplicates itself, e.g. in its database transaction), and ``idempotency_ttl``
+        (seconds) forgets answers after that long."""
         if not naming.valid_name(name) or name.startswith("ipc."):
             raise ValueError(f"invalid method name {name!r}")
+        if idempotency_ttl is not None and idempotency_ttl <= 0:
+            raise ValueError("idempotency_ttl must be positive")
         decl = MethodDecl(name, sorted(set(versions)), ordered, idempotent, doc, params,
                           result)
 
         def register(fn: Handler) -> Handler:
             with self._decl_lock:
-                self._methods[name] = _Method(decl, fn, inline)
+                self._methods[name] = _Method(decl, fn, inline, idempotency_cache,
+                                              idempotency_ttl)
             self._redeclare()
             return fn
 

@@ -317,3 +317,40 @@ def test_permanent_errors_stay_cached(endpoint, client):
         with pytest.raises(RemoteError):
             c.call("t.store", None, idempotency_key="k/1")
     assert len(runs) == 1
+
+
+def test_idempotency_cache_can_be_disabled(endpoint, client):
+    ep = endpoint()
+    runs = []
+
+    @ep.method("t.store", idempotent=True, idempotency_cache=False)
+    def store(ctx, params):
+        runs.append(1)
+        return len(runs)
+
+    ep.start()
+    c = client()
+    c.connect(5)
+    assert c.call("t.store", None, idempotency_key="k/1") == 1
+    assert c.call("t.store", None, idempotency_key="k/1") == 2
+    assert ep.declarations().methods["t.store"].idempotent
+
+
+def test_idempotency_ttl_expires_answers(endpoint, client):
+    ep = endpoint()
+    runs = []
+
+    @ep.method("t.store", idempotent=True, idempotency_ttl=0.3)
+    def store(ctx, params):
+        runs.append(1)
+        return len(runs)
+
+    ep.start()
+    c = client()
+    c.connect(5)
+    assert c.call("t.store", None, idempotency_key="k/1") == 1
+    assert c.call("t.store", None, idempotency_key="k/1") == 1
+    time.sleep(0.4)
+    assert c.call("t.store", None, idempotency_key="k/1") == 2
+    with pytest.raises(ValueError):
+        ep.method("t.bad", lambda ctx, p: 1, idempotent=True, idempotency_ttl=0)
