@@ -128,14 +128,21 @@ class IdempotencyCache:
     lifetime (SPEC.md 10.4): a retry after a reconnect gets the first result instead of a
     second execution. Durable deduplication across restarts is the application's job."""
 
-    def __init__(self, max_entries: int = 4096, ttl: float | None = None) -> None:
+    def __init__(self, max_entries: int = 4096, ttl: float | None = None,
+                 wait_s: float = 30.0) -> None:
         self.max_entries = max_entries
+        self.wait_s = wait_s  # longest a repeat waits for the first run of the same key
         self.ttl = ttl  # seconds an answer is remembered; None: for the process lifetime
         self._lock = threading.Lock()
         self._done: OrderedDict[tuple[str, str, str], tuple[bool, Any, float]] = OrderedDict()
         self._running: dict[tuple[str, str, str], threading.Event] = {}
 
-    def run(self, key: tuple[str, str, str], fn: Callable[[], Any]) -> Any:
+    def run(self, key: tuple[str, str, str], fn: Callable[[], Any],
+            deadline: float | None = None) -> Any:
+        """Run ``fn`` once per key. A repeat that arrives while the first still runs waits
+        until the first finishes, at most until ``deadline`` (``time.perf_counter()``
+        value; default ``wait_s`` from now), then answers the retryable ``busy``."""
+        limit = deadline if deadline is not None else time.perf_counter() + self.wait_s
         while True:
             with self._lock:
                 entry = self._done.get(key)
@@ -151,7 +158,10 @@ class IdempotencyCache:
                 if ev is None:
                     ev = self._running[key] = threading.Event()
                     break
-            ev.wait()
+            left = limit - time.perf_counter()
+            if left <= 0 or not ev.wait(left):
+                raise RemoteError(E.BUSY, "the first request with this idempotency key is "
+                                  "still running", retry_ms=500)
         try:
             value = fn()
             result = (True, value)
@@ -590,7 +600,8 @@ class _Node:
                     raise RemoteError(E.TIMEOUT, "the deadline passed before the request ran")
                 if m.cache is not None and ctx.idempotency_key is not None:
                     key = (peer.info.app, ctx.method, ctx.idempotency_key)
-                    result = m.cache.run(key, lambda: m.handler(ctx, ctx.params))
+                    result = m.cache.run(key, lambda: m.handler(ctx, ctx.params),
+                                         ctx.deadline)
                 else:
                     result = m.handler(ctx, ctx.params)
                 reply: dict[str, Any] = {"t": "res", "id": ctx.id, "ok": True, "r": result}

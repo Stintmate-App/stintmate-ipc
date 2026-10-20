@@ -705,7 +705,9 @@ the owner was down) SHOULD carry an **idempotency key** `ik`.
 - **Owner** of a method declared `idempotent: true`: two requests with the same `ik` from
   peers with the same `peer.app` are one operation. The owner MUST NOT apply it twice; it
   SHOULD answer the repeat with the first answer (same `r`, or the same error); if the
-  first is still running it MAY make the repeat wait or answer `busy` with `retry_ms`.
+  first is still running it MAY make the repeat wait or answer `busy` with `retry_ms`. A
+  repeat that waits MUST have a deadline (the request's `dl`, or an owner default such as
+  30 s) and answers `busy` with `retry_ms` when it passes: it never waits forever.
   The method's documentation states how long keys are remembered: for durable writes
   (laps stored in a database) that means as long as the data, so the key belongs in the
   same transaction as the write.

@@ -354,3 +354,33 @@ def test_idempotency_ttl_expires_answers(endpoint, client):
     assert c.call("t.store", None, idempotency_key="k/1") == 2
     with pytest.raises(ValueError):
         ep.method("t.bad", lambda ctx, p: 1, idempotent=True, idempotency_ttl=0)
+
+
+def test_waiter_on_inflight_idempotent_request_gets_busy():
+    from stintmate_ipc.node import IdempotencyCache
+    cache = IdempotencyCache(wait_s=0.3)
+    release = threading.Event()
+    started = threading.Event()
+    key = ("app", "t.slow", "k/1")
+
+    def slow():
+        started.set()
+        release.wait(10)
+        return "done"
+
+    first = []
+    th = threading.Thread(target=lambda: first.append(cache.run(key, slow)))
+    th.start()
+    assert started.wait(5)
+    t0 = time.perf_counter()
+    with pytest.raises(RemoteError) as ei:  # default wait
+        cache.run(key, lambda: "second")
+    assert ei.value.code == "busy" and ei.value.retry_ms
+    with pytest.raises(RemoteError) as ei:  # the request's own deadline
+        cache.run(key, lambda: "second", time.perf_counter() + 0.05)
+    assert ei.value.code == "busy"
+    assert time.perf_counter() - t0 < 3
+    release.set()
+    th.join(5)
+    assert first == ["done"]
+    assert cache.run(key, lambda: "second") == "done"
