@@ -16,6 +16,20 @@ idempotency keys; event, state and stream channels with snapshots and per-kind
 slow-subscriber rules; ordering guarantees; QPC timestamps; heartbeat; reconnection;
 conformance; security considerations; implementer's guide with C# and Rust sketches.
 
+### Package 0.1.1
+
+- The idempotency cache never stores answers with retryable codes (`shutting_down`,
+  `writer_busy`, `busy`, `unavailable`, ...): a retry with the same `ik` runs the handler
+  again (SPEC.md 10.4).
+- `Endpoint.method(..., idempotency_cache=True, idempotency_ttl=None)`: opt out of the
+  cache or forget answers after a TTL.
+- A repeat waiting on an in-flight request with the same `ik` has a deadline (the
+  request's, or 30 s) and answers `busy` with `retry_ms` instead of hanging.
+- `EventChannel.send_to(peer, data, ...)` and `StateChannel.send_to(peer, value, ...)`:
+  public per-subscriber sends.
+- `Client.reconnect_delay(code, attempt)`: reconnect delay by `bye` code (SPEC.md 15.3).
+- `stintmate-ipc-check` leaves the process at once after its run.
+
 ### Package 0.1.0 (not tagged yet)
 
 - `Endpoint`, `Client`, `connect`, `Peer`: symmetric connections, handler threads,

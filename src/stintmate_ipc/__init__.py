@@ -34,7 +34,7 @@ from .node import (Channel, Client, ClientSubscription, Context, Endpoint, Event
 from .peer import Event, PendingCall, Peer, Sample, Subscription
 from .wire import PROTOCOL_VERSION
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "PROTOCOL_VERSION", "CallTimeout", "Channel", "ChannelDecl", "Client",
