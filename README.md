@@ -15,8 +15,13 @@ talk to each other on one Windows PC, and its Python reference implementation.
 - **`stintmate-ipc-check`**: a conformance checker for any implementation, server or client.
 - **[BENCHMARKS.md](BENCHMARKS.md)**: latency and CPU on the reference PC.
 
-Status: 0.1.1, draft protocol revision 2.0. Not published yet; the licence is to be
-decided before it is.
+Status: 0.1.1, draft protocol revision 2.0. Not published yet.
+
+## Licence
+
+Apache License 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)): the specification, the test
+vectors, the Python package and the conformance tool. Anyone may implement the protocol,
+in any language, for any purpose; the licence does not cover the name "Stintmate".
 
 ## Install
 

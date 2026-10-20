@@ -3,6 +3,8 @@ name = "stintmate-ipc"
 version = "0.1.1"
 description = "Stintmate IPC v2: an open protocol over Windows named pipes (request/response, event channels, binary streams) and its Python reference implementation"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = ["msgpack>=1.0"]
 classifiers = [

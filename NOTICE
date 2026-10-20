@@ -1,0 +1,11 @@
+Stintmate IPC
+Copyright 2026 The Stintmate authors
+
+This product includes the Stintmate IPC v2 specification, its test vectors and
+the Python reference implementation (stintmate-ipc), licensed under the Apache
+License, Version 2.0 (see LICENSE).
+
+"Stintmate" is a name of the Stintmate project. The licence does not grant
+permission to use it, except to describe the origin of the work (section 6 of
+the licence). Independent implementations of the protocol are welcome; please
+do not present them as official Stintmate software.

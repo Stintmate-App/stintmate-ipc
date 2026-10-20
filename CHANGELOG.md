@@ -5,6 +5,8 @@ specification by wire version and revision (2.0), the package by semantic versio
 
 ## Unreleased
 
+- Licensed under the Apache License 2.0 (LICENSE, NOTICE).
+
 ### Specification revision 2.0 (wire version 2), 2026-10-20
 
 First revision of Stintmate IPC v2, the successor of the 2026 Pitwall connector protocol
