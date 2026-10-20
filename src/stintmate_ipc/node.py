@@ -273,6 +273,22 @@ class EventChannel(Channel):
                 n += 1
         return n
 
+    def send_to(self, peer: Peer, data: Any, *, ts: int | None = None,
+                version: int | None = None) -> int:
+        """Send ``data`` only to ``peer``'s subscriptions to this channel (only the one of
+        ``version`` when given): a reply to a single subscriber, not a broadcast. Never
+        blocks. Returns the number of subscriptions it was queued for (0: ``peer`` is not
+        subscribed)."""
+        subs = [s for s in self._subs
+                if s.peer is peer and (version is None or s.version == version)]
+        if not subs:
+            return 0
+        packed = wire.pack(data)
+        t = now_ns() if ts is None else ts
+        for sub in subs:
+            peer._offer_event(sub, t, packed)
+        return len(subs)
+
 
 class StateChannel(Channel):
     """A current value: a new subscriber gets it in the ``sub`` response (the snapshot),
@@ -299,6 +315,21 @@ class StateChannel(Channel):
             subs = self._subs
             for sub in subs:
                 sub.peer._offer_state(sub, t, packed)
+
+    def send_to(self, peer: Peer, value: Any, *, ts: int | None = None) -> int:
+        """Push ``value`` to ``peer``'s subscriptions only (for example a snapshot again
+        after a resync); the channel's current value and the other subscribers are not
+        touched. Returns the number of subscriptions it was queued for (0: not
+        subscribed)."""
+        packed = wire.pack(value)
+        t = now_ns() if ts is None else ts
+        n = 0
+        with self._lock:
+            for sub in self._subs:
+                if sub.peer is peer:
+                    peer._offer_state(sub, t, packed)
+                    n += 1
+        return n
 
     def _snapshot(self, sub: _OutSub) -> dict[str, Any]:
         return {"snap": self._value, "ts": self._ts}

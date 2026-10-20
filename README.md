@@ -90,8 +90,8 @@ tel.send_values(212.5, 1.0, 0.0, 5, 0, 7400)
 | `connect(pipe, info, key, *, timeout=5.0)` | One connection, no reconnect; returns a `Peer`. |
 | node options (both) | `handler_threads=8`, `heartbeat_ms=5000`, `max_frame=1 MiB`, `max_message=256 MiB`, `event_queue=1024`, `event_queue_bytes=8 MiB`, `max_inflight=1024`, `features=()`. |
 | `.method(name, handler=None, *, versions=(1,), ordered=False, idempotent=False, idempotency_cache=True, idempotency_ttl=None, inline=False, doc=None)` | Offer a method (decorator or direct). `handler(ctx, params) -> result`; raise `RemoteError(code, msg, details, retry_ms)` to answer an error. Idempotent methods remember answers by `ik` (process lifetime by default; retryable error answers are never remembered): `idempotency_cache=False` declares the method but keeps no cache (the handler deduplicates), `idempotency_ttl=seconds` forgets answers after that long. |
-| `.event_channel(name, *, versions=(1,))` -> `EventChannel` | `.publish(data, ts=None, version=None)`. |
-| `.state_channel(name, initial=None, *, versions=(1,))` -> `StateChannel` | `.set(value)`, `.value`. |
+| `.event_channel(name, *, versions=(1,))` -> `EventChannel` | `.publish(data, ts=None, version=None)`; `.send_to(peer, data, ts=None, version=None)` -> int queues it for one peer's subscriptions only (a reply to a single subscriber; `peer` from `SubscribeRequest.peer` or `Context.peer`). |
+| `.state_channel(name, initial=None, *, versions=(1,))` -> `StateChannel` | `.set(value)`, `.value`; `.send_to(peer, value, ts=None)` -> int pushes a value to one peer's subscriptions only (the channel value is unchanged). |
 | `.stream_channel(name, layout, *, versions=(1,), rate_hz=None, queue=None)` -> `StreamChannel` | `.send(body, t_ns=None)`, `.send_values(*values, t_ns=None)`. |
 | `Channel` | `.subscriber_count`, `.active`, `.on_active(bool)` (first subscriber came / last left), `.on_subscribe(req)` (may refuse), `.close()`. |
 | `Peer` | One connection: `.info` (`PeerInfo`), `.pid` (from the OS), `.decl`, `.run`, `.call(method, params=None, *, version=1, timeout=5.0, idempotency_key=None, on_progress=None)`, `.call_async(...)` -> `PendingCall`, `.subscribe(channel, callback, *, version=1, options=None, on_end=None, deliver="auto")` -> `Subscription`, `.ping()`, `.close(code, message)`. |
@@ -122,7 +122,7 @@ the bounded queues) and a reader that hands work to a cache of worker threads.
   (`call()` raises there; `call_async()` works). That halves the subscriber's CPU per
   stream. `deliver="thread"` or `"inline"` overrides the default (`"auto"`) for any kind;
   a slow `"thread"` stream callback drops the oldest samples.
-- **Producers never block**: `publish`, `set`, `send` and `call` only queue when the pipe is
+- **Producers never block**: `publish`, `send_to`, `set`, `send` and `call` only queue when the pipe is
   busy; the 200 Hz loop of a recorder costs one `struct.pack` and a lock.
 
 **Plain threaded apps**: use it as above.

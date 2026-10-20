@@ -321,3 +321,34 @@ def test_inline_callbacks_cannot_wait_on_their_own_reader(endpoint, client):
     ch.publish(0)
     wait_for(lambda: len(errors) == 2)
     assert "reader thread" in errors[0] and errors[1] == 2
+
+
+def test_send_to_one_subscriber_on_event_and_state_channels(endpoint, client):
+    ep = endpoint()
+    ev = ep.event_channel("t.laps")
+    st = ep.state_channel("t.status", {"n": 0})
+    peers = {}
+
+    def seen(req):
+        peers[req.options["who"]] = req.peer
+
+    ev.on_subscribe = seen
+    ep.start()
+    a, b = client(), client()
+    a.connect(5)
+    b.connect(5)
+    got_a, got_b, st_a, st_b = [], [], [], []
+    a.subscribe("t.laps", got_a.append, options={"who": "a"})
+    b.subscribe("t.laps", got_b.append, options={"who": "b"})
+    a.subscribe("t.status", st_a.append)
+    b.subscribe("t.status", st_b.append)
+    wait_for(lambda: ev.subscriber_count == 2 and st.subscriber_count == 2)
+    assert ev.send_to(peers["a"], {"only": "a"}) == 1
+    assert st.send_to(peers["a"], {"n": 99}) == 1
+    wait_for(lambda: len(got_a) == 1 and st_a and st_a[-1].data == {"n": 99})
+    ev.publish({"all": 1})
+    wait_for(lambda: len(got_a) == 2 and len(got_b) == 1)
+    assert got_b[0].data == {"all": 1}
+    assert all(e.data != {"n": 99} for e in st_b)
+    assert st.value == {"n": 0}
+    assert ev.send_to(peers["a"], 1, version=2) == 0
