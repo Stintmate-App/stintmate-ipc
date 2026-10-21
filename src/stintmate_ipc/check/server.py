@@ -128,6 +128,7 @@ class ServerChecker:
             r(f"S21.{i + 1}", f"call {m}", "10.2", lambda m=m, p=p: self.c_call(m, p))
         if self.slow:
             r("S22", "idle connection gets a ping within heartbeat_ms", "15.2", self.c_heartbeat)
+        r("S24", "cancel for an unknown id is ignored", "10.3", self.c_cancel_unknown)
         r("S23", "bye closes the connection", "10.12", self.c_bye)
         return self.report
 
@@ -256,6 +257,19 @@ class ServerChecker:
             c.send({"t": "x_check_unknown", "zz": 1})
             ts = 12345
             c.send({"t": "ping", "ts": ts, "zz_unknown": {"a": [1, 2]}})
+            m = c.recv_msg(skip=("ping", "decl"))
+            _expect(m.get("t") == "pong" and m.get("ts") == ts,
+                    f"expected pong, got {m.get('t')!r} {m.get('code', '')}")
+            return ""
+        finally:
+            c.close()
+
+    def c_cancel_unknown(self) -> str:
+        c = self._session()
+        try:
+            c.send({"t": "cancel", "id": 424242})
+            ts = 54321
+            c.send({"t": "ping", "ts": ts})
             m = c.recv_msg(skip=("ping", "decl"))
             _expect(m.get("t") == "pong" and m.get("ts") == ts,
                     f"expected pong, got {m.get('t')!r} {m.get('code', '')}")

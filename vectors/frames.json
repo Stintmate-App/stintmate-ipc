@@ -493,6 +493,41 @@
           "action": "answer pong ts 2"
         }
       ]
+    },
+    {
+      "name": "cancel_unknown_id",
+      "description": "a cancel for an id nothing is running is ignored (10.3)",
+      "hex": "130000000182a174a663616e63656ca26964ce00067932",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "cancel",
+            "id": 424242
+          },
+          "action": "ignore"
+        }
+      ]
+    },
+    {
+      "name": "res_after_cancel",
+      "description": "a response for a call the caller already gave up on is ignored (10.3)",
+      "hex": "3e0000000184a174a3726573a269641fa26f6bc2a16582a4636f6465a963616e63656c6c6564a36d7367b763616e63656c6c6564206279207468652063616c6c6572",
+      "frames": [
+        {
+          "kind": 1,
+          "message": {
+            "t": "res",
+            "id": 31,
+            "ok": false,
+            "e": {
+              "code": "cancelled",
+              "msg": "cancelled by the caller"
+            }
+          },
+          "action": "ignore (the caller gave up)"
+        }
+      ]
     }
   ]
 }

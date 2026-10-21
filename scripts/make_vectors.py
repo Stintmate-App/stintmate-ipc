@@ -132,6 +132,22 @@ def frames() -> dict[str, Any]:
                              {"kind": 1, "message": {"t": "ping", "ts": 2,
                                                      "zz_new_field": [1, 2]},
                               "action": "answer pong ts 2"}]})
+    cases.append({"name": "cancel_unknown_id",
+                  "description": "a cancel for an id nothing is running is ignored (10.3)",
+                  "hex": wire.message_frame({"t": "cancel", "id": 424242}).hex(),
+                  "frames": [{"kind": 1, "message": {"t": "cancel", "id": 424242},
+                              "action": "ignore"}]})
+    cases.append({"name": "res_after_cancel",
+                  "description": "a response for a call the caller already gave up on is ignored "
+                                 "(10.3)",
+                  "hex": wire.message_frame({"t": "res", "id": 31, "ok": False,
+                                             "e": {"code": "cancelled",
+                                                   "msg": "cancelled by the caller"}}).hex(),
+                  "frames": [{"kind": 1,
+                              "message": {"t": "res", "id": 31, "ok": False,
+                                          "e": {"code": "cancelled",
+                                                "msg": "cancelled by the caller"}},
+                              "action": "ignore (the caller gave up)"}]})
     return {"description": "Frames after the handshake: hex bytes as received, and what they "
                            "decode to (SPEC.md 5, 6, 10).", "cases": cases}
 

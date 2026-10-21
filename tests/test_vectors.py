@@ -139,3 +139,19 @@ def test_error_vectors_against_a_live_endpoint(case, endpoint, key, pipe_name):
         assert byes and byes[-1]["code"] == case["expect"], seen
     finally:
         rc.close()
+
+
+@pytest.mark.parametrize("name", ["cancel_unknown_id", "res_after_cancel"])
+def test_stale_cancel_frames_are_ignored(name, endpoint, client):
+    case = next(c for c in load("frames.json")["cases"] if c["name"] == name)
+    assert case["frames"][0]["action"].startswith("ignore")
+    ep = endpoint()
+    ep.start()
+    c = client()
+    peer = c.connect(5)
+    msg = decode_all(bytes.fromhex(case["hex"]))[0]["message"]
+    for _ in range(2):  # fed to the reference receiver on both sides
+        peer._dispatch_message(msg) if hasattr(peer, "_dispatch_message") else \
+            {"cancel": peer._h_cancel, "res": peer._h_res}[msg["t"]](msg)
+    assert peer.ping(2) >= 0 and not peer.closed.is_set()
+    assert not peer._calls and not peer._abandoned

@@ -42,7 +42,7 @@ def test_server_checker_passes_the_reference(endpoint, key, pipe_name):
     text = report.to_text()
     assert report.ok, text
     ids = {r.id for r in report.results}
-    assert {"S01", "S02", "S03", "S06", "S15", "S19.t.s", "S19.t.st", "S22"} <= ids
+    assert {"S01", "S02", "S03", "S06", "S15", "S19.t.s", "S19.t.st", "S22", "S24"} <= ids
     assert all(r.status in ("PASS", "INFO") for r in report.results), text
 
 
