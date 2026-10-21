@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Any
 from . import errors as E
 from . import wire
 from .decl import EVENT, STATE, STREAM, Declarations
-from .errors import (CallTimeout, ConnectionLost, NotConnected, PipeClosed, ProtocolError,
+from .errors import (CallCancelled, CallTimeout, ConnectionLost, NotConnected, PipeClosed,
+                     ProtocolError,
                      RemoteError)
 from .handshake import PeerInfo
 from ._threads import Lane
@@ -137,6 +138,17 @@ class PendingCall:
     def exception(self) -> BaseException | None:
         return self._error
 
+    def cancel(self, reason: str = "") -> bool:
+        """Give up on the call: send ``cancel`` to the owner (when connected), fail the call
+        with :class:`CallCancelled` and run its done callbacks on this thread; the late
+        ``res`` is ignored. Returns False (and does nothing) when the call was already done
+        or its response won the race. Non-blocking and callable from any thread, including a
+        done or progress callback and an inline handler."""
+        if self._done:
+            return False
+        text = f"{self.method}: cancelled" + (f": {reason}" if reason else "")
+        return self.peer._give_up(self, CallCancelled(text))
+
     def result(self, timeout: float | None = None) -> Any:
         """Wait for the response. When the call's own deadline passes a ``cancel`` is sent
         and :class:`CallTimeout` raised; ``timeout`` only limits this wait (the call stays
@@ -149,7 +161,7 @@ class PendingCall:
                 break
             t = time.perf_counter()
             if self.deadline is not None and t >= self.deadline:
-                self.peer._call_timed_out(self)
+                self.peer._give_up(self, CallTimeout(f"{self.method}: no response in time"))
                 break
             if end is not None and t >= end:
                 raise CallTimeout(f"{self.method}: no response yet")
@@ -648,18 +660,36 @@ class Peer:
                                "reader thread (an inline callback or method): use "
                                "call_async(), or deliver='thread'")
 
-    def _call_timed_out(self, pc: PendingCall) -> None:
+    def _give_up(self, pc: PendingCall, error: BaseException, send_cancel: bool = True) -> bool:
+        """Stop waiting for ``pc``: forget it, tell the owner (``cancel``, not for a ``sub``
+        wait: a late ``sid`` gets ``unsub``) and fail it with ``error``. The pop from the
+        in-flight tables decides a race with the response: True when this call won it."""
         with self._lock:
             if self._calls.pop(pc.id, None) is None:
-                if self._sub_waits.pop(pc.id, None) is not None:
-                    self._abandoned.add(pc.id)
-                    pc._finish(error=CallTimeout(f"{pc.method}: no response in time"))
+                if self._sub_waits.pop(pc.id, None) is None:
+                    return False
+                self._abandoned.add(pc.id)
+                send_cancel = False
+        if send_cancel:
+            try:
+                self._enqueue(("f", wire.message_frame({"t": "cancel", "id": pc.id})))
+            except NotConnected:
+                pass
+        pc._finish(error=error)
+        return True
+
+    def _expire_calls(self, now: float) -> None:
+        """Fail every call whose deadline passed (the heartbeat tick), so a call nobody
+        waits on still ends on time."""
+        with self._lock:
+            if not self._calls and not self._sub_waits:
                 return
-        try:
-            self._enqueue(("f", wire.message_frame({"t": "cancel", "id": pc.id})))
-        except NotConnected:
-            pass
-        pc._finish(error=CallTimeout(f"{pc.method}: no response in time"))
+            late = [pc for pc in self._calls.values()
+                    if pc.deadline is not None and now >= pc.deadline]
+            late += [pc for _, pc in self._sub_waits.values()
+                     if pc.deadline is not None and now >= pc.deadline]
+        for pc in late:
+            self._give_up(pc, CallTimeout(f"{pc.method}: no response in time"))
 
     def ping(self, timeout: float = 2.0) -> float:
         """Round trip in seconds (``ping``/``pong``)."""

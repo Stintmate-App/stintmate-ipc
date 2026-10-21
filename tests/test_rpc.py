@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from stintmate_ipc import (CallTimeout, ConnectionLost, NotConnected, RemoteError)
+from stintmate_ipc import (CallCancelled, CallTimeout, ConnectionLost, NotConnected,
+                          RemoteError)
 
 from .conftest import wait_for
 
@@ -384,3 +385,208 @@ def test_waiter_on_inflight_idempotent_request_gets_busy():
     th.join(5)
     assert first == ["done"]
     assert cache.run(key, lambda: "second") == "done"
+
+
+# ---------------------------------------------------------------------- cancel (0.1.2)
+
+def _slow_cancel_aware(ep, name="t.slow"):
+    saw = threading.Event()
+
+    def slow(ctx, params):
+        if ctx.wait_cancelled(5):
+            saw.set()
+        return "late"
+
+    ep.method(name, slow)
+    return saw
+
+
+def test_cancel_sends_cancel_and_fails_with_call_cancelled(endpoint, client):
+    ep = endpoint()
+    saw = _slow_cancel_aware(ep)
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.slow", timeout=10)
+    t0 = time.monotonic()
+    assert pc.cancel("not needed") is True
+    with pytest.raises(CallCancelled) as ei:
+        pc.result()
+    assert time.monotonic() - t0 < 0.2
+    assert ei.value.code == "cancelled" and "not needed" in str(ei.value)
+    assert not isinstance(ei.value, (CallTimeout, TimeoutError))
+    assert saw.wait(3)
+    time.sleep(0.3)  # the handler's late response is ignored
+    assert pc.done() and isinstance(pc.exception(), CallCancelled)
+
+
+def test_cancel_after_the_answer_is_a_no_op(endpoint, client):
+    ep = endpoint()
+    ep.method("t.echo", lambda ctx, p: p)
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.echo", {"a": 1})
+    assert pc.result() == {"a": 1}
+    assert pc.cancel() is False
+    assert pc.result() == {"a": 1} and pc.exception() is None
+
+
+def test_cancel_is_idempotent_and_callbacks_run_once(endpoint, client):
+    ep = endpoint()
+    _slow_cancel_aware(ep)
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.slow", timeout=10)
+    seen = []
+    pc.add_done_callback(lambda p: seen.append(threading.get_ident()))
+    assert pc.cancel() is True
+    assert pc.cancel() is False
+    assert seen == [threading.get_ident()]  # on the cancelling thread, once
+
+
+def test_cancel_from_threads_races_with_the_answer(endpoint, client):
+    ep = endpoint()
+    ep.method("t.echo", lambda ctx, p: p)
+    ep.start()
+    c = client()
+    c.connect(5)
+    outcomes = {"ok": 0, "cancelled": 0}
+    for i in range(200):
+        pc = c.call_async("t.echo", i)
+        calls = []
+        pc.add_done_callback(lambda p, calls=calls: calls.append(1))
+        t = threading.Thread(target=pc.cancel)
+        t.start()
+        t.join(5)
+        assert pc._wait(5), "call hung"
+        assert calls == [1]
+        err = pc.exception()
+        if err is None:
+            assert pc.result() == i
+            outcomes["ok"] += 1
+        else:
+            assert isinstance(err, CallCancelled)
+            outcomes["cancelled"] += 1
+    assert sum(outcomes.values()) == 200
+    assert c.call("t.echo", "still alive") == "still alive"
+
+
+def test_cancel_from_a_done_callback_and_from_an_inline_handler(endpoint, client):
+    ep = endpoint()
+    _slow_cancel_aware(ep)
+    ep.method("t.echo", lambda ctx, p: p)
+    ep.start()
+    c = client()
+    c.connect(5)
+    # a progress/done callback cancelling another call, and a call cancelling itself
+    other = c.call_async("t.slow", timeout=10)
+    trigger = c.call_async("t.echo", 1)
+    trigger.add_done_callback(lambda p: other.cancel())
+    assert trigger.result() == 1
+    with pytest.raises(CallCancelled):
+        other.result(timeout=3)
+    # inline subscription callback (reader thread) cancelling a call
+    ch = ep.event_channel("t.ev")
+    victim = c.call_async("t.slow", timeout=10)
+    got = []
+    c.subscribe("t.ev", lambda ev: got.append(victim.cancel()), deliver="inline")
+    ch.publish({"x": 1})
+    assert wait_for(lambda: got, 3)
+    assert got == [True]
+    with pytest.raises(CallCancelled):
+        victim.result(timeout=3)
+
+
+def test_cancel_when_disconnected_finishes_locally(endpoint, client):
+    ep = endpoint()
+    _slow_cancel_aware(ep)
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.slow", timeout=10)
+
+    def refuse(item):
+        raise NotConnected("gone")
+
+    pc.peer._enqueue = refuse
+    assert pc.cancel() is True
+    with pytest.raises(CallCancelled):
+        pc.result()
+
+
+def test_deadline_without_a_waiter_times_out(endpoint, client):
+    ep = endpoint()
+    saw = _slow_cancel_aware(ep)
+    ep.start()
+    c = client()
+    c.connect(5)
+    got = []
+    t0 = time.monotonic()
+    pc = c.call_async("t.slow", timeout=0.3)
+    pc.add_done_callback(lambda p: got.append((time.monotonic() - t0, p.exception())))
+    assert wait_for(lambda: got, 3)
+    elapsed, err = got[0]
+    assert isinstance(err, CallTimeout) and 0.25 < elapsed < 0.9
+    assert saw.wait(3)
+
+
+def test_progress_still_extends_the_deadline_for_the_sweep(endpoint, client):
+    ep = endpoint()
+
+    @ep.method("t.capture")
+    def capture(ctx, params):
+        for i in range(4):
+            time.sleep(0.15)
+            ctx.progress({"shot": i}, extend_s=0.5)
+        return "ok"
+
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.capture", timeout=0.3)
+    got = []
+    pc.add_done_callback(got.append)  # nobody waits: only the sweep watches the deadline
+    assert wait_for(lambda: got, 5)
+    assert pc.exception() is None and pc.result() == "ok"
+
+
+def test_cancel_a_subscribe_wait(endpoint, client):
+    from stintmate_ipc.peer import PendingCall
+    ep = endpoint()
+    ep.start()
+    c = client()
+    c.connect(5)
+    peer = c.peer
+    sent = []
+    real = peer._enqueue
+    peer._enqueue = lambda item: sent.append(item) or real(item)
+    rid = 424242
+    pc = PendingCall(peer, rid, "sub t.x", 5.0, None)
+    with peer._lock:
+        peer._sub_waits[rid] = (None, pc)
+    assert pc.cancel() is True
+    with pytest.raises(CallCancelled):
+        pc.result()
+    assert rid in peer._abandoned
+    assert not any(b"cancel" in repr(x).encode() for x in sent)  # no cancel frame for a sub
+    peer._h_res({"id": rid, "ok": True, "r": {"sid": 99, "kind": "event"}})
+    assert any(b"unsub" in repr(x).encode() for x in sent)  # the late sid is released
+
+
+def test_deadline_sweep_cost(endpoint, client):
+    ep = endpoint()
+    ep.start()
+    c = client()
+    c.connect(5)
+    peer = c.peer
+    from stintmate_ipc.peer import PendingCall
+    with peer._lock:
+        for i in range(1000):
+            peer._calls[10_000 + i] = PendingCall(peer, 10_000 + i, "t.x", 600.0, None)
+    t0 = time.perf_counter()
+    peer._expire_calls(time.perf_counter())
+    assert time.perf_counter() - t0 < 0.01  # generous bound; the benchmark has the number
+    with peer._lock:
+        peer._calls.clear()

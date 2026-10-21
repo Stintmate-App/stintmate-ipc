@@ -21,7 +21,7 @@ Quick start::
 """
 
 from .decl import ChannelDecl, Declarations, MethodDecl
-from .errors import (CallTimeout, ConnectionLost, EndpointInUse, HandshakeError, IpcError,
+from .errors import (CallCancelled, CallTimeout, ConnectionLost, EndpointInUse, HandshakeError, IpcError,
                      KeyFileError, NotConnected, PipeBusy, PipeClosed, PipeError, PipeNotFound,
                      ProtocolError, RemoteError)
 from .handshake import PeerInfo
@@ -34,10 +34,10 @@ from .node import (Channel, Client, ClientSubscription, Context, Endpoint, Event
 from .peer import Event, PendingCall, Peer, Sample, Subscription
 from .wire import PROTOCOL_VERSION
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
-    "PROTOCOL_VERSION", "CallTimeout", "Channel", "ChannelDecl", "Client",
+    "PROTOCOL_VERSION", "CallCancelled", "CallTimeout", "Channel", "ChannelDecl", "Client",
     "ClientSubscription", "ConnectionLost", "Context", "Declarations", "Endpoint",
     "EndpointInUse", "Event", "EventChannel", "HandshakeError", "IdempotencyCache",
     "IpcError", "KeyFile", "KeyFileError", "Layout", "MethodDecl", "NotConnected", "Peer",

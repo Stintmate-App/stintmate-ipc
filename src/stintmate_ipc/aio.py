@@ -26,7 +26,15 @@ from .peer import PendingCall
 
 def wrap_call(pc: PendingCall, loop: asyncio.AbstractEventLoop | None = None
               ) -> asyncio.Future[Any]:
-    """An asyncio future completed (on ``loop``) when the call completes."""
+    """An asyncio future completed (on ``loop``) when the call completes. Cancelling the
+    future (``task.cancel()``, a ``wait_for`` timeout) cancels the call: ``cancel`` is sent
+    to the owner. A :class:`CallCancelled` from another thread's ``pc.cancel()`` reaches the
+    awaiter as that exception::
+
+        pc = client.call_async("voice.agent_task", params, timeout=None)
+        task = asyncio.ensure_future(wrap_call(pc))
+        pc.cancel()          # await task -> CallCancelled
+    """
     loop = loop or asyncio.get_running_loop()
     fut: asyncio.Future[Any] = loop.create_future()
 
@@ -42,6 +50,8 @@ def wrap_call(pc: PendingCall, loop: asyncio.AbstractEventLoop | None = None
         loop.call_soon_threadsafe(settle)
 
     pc.add_done_callback(done)
+    # task.cancel() / asyncio.wait_for timeouts cancel the future: cancel the call too
+    fut.add_done_callback(lambda f: f.cancelled() and pc.cancel())
     return fut
 
 

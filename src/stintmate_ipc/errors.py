@@ -87,6 +87,13 @@ class CallTimeout(IpcError, TimeoutError):
     """No response within the call's timeout (a ``cancel`` was sent)."""
 
 
+class CallCancelled(IpcError):
+    """The caller cancelled the call (:meth:`PendingCall.cancel`; a ``cancel`` was sent).
+    Not a timeout: it is not a :class:`CallTimeout`."""
+
+    code = CANCELLED
+
+
 class RemoteError(IpcError):
     """An error response (``res`` with ``ok: false``).
 

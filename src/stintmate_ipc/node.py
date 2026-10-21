@@ -559,7 +559,9 @@ class _Node:
             t = time.monotonic()
             with self._peers_lock:
                 peers = list(self._peers)
+            tp = time.perf_counter()
             for p in peers:
+                p._expire_calls(tp)
                 hb = p.heartbeat_ms / 1000
                 if t - p.last_recv > 3 * hb:
                     log.warning("%s: nothing received for %.1f s; closing", p.info.app,

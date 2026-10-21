@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -230,3 +231,63 @@ def test_client_stops_after_version_unsupported(client, monkeypatch):
     assert c._thread is not None
     c._thread.join(5)  # no endpoint: the first failed attempt ends the loop
     assert not c._thread.is_alive()
+
+
+def _aio_cancel_rig(endpoint, client):
+    ep = endpoint()
+    saw = threading.Event()
+
+    def slow(ctx, params):
+        if ctx.wait_cancelled(5):
+            saw.set()
+        return "late"
+
+    ep.method("t.slow", slow)
+    ep.start()
+    return saw, client().start()
+
+
+def test_asyncio_wait_for_timeout_sends_cancel(endpoint, client):
+    saw, c = _aio_cancel_rig(endpoint, client)
+
+    async def main():
+        ac = AsyncClient(c)
+        await ac.wait_connected(5)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(ac.call("t.slow", timeout=10), 0.2)
+
+    asyncio.run(main())
+    assert saw.wait(3)
+
+
+def test_asyncio_task_cancel_sends_cancel(endpoint, client):
+    saw, c = _aio_cancel_rig(endpoint, client)
+
+    async def main():
+        ac = AsyncClient(c)
+        await ac.wait_connected(5)
+        task = asyncio.ensure_future(ac.call("t.slow", timeout=10))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert saw.wait(3)
+
+
+def test_asyncio_call_cancelled_by_another_thread(endpoint, client):
+    from stintmate_ipc import CallCancelled
+    from stintmate_ipc.aio import wrap_call
+    saw, c = _aio_cancel_rig(endpoint, client)
+
+    async def main():
+        ac = AsyncClient(c)
+        await ac.wait_connected(5)
+        pc = c.call_async("t.slow", timeout=10)
+        threading.Timer(0.1, pc.cancel).start()
+        with pytest.raises(CallCancelled):
+            await wrap_call(pc)
+
+    asyncio.run(main())
+    assert saw.wait(3)
