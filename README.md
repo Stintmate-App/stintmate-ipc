@@ -99,15 +99,15 @@ tel.send_values(212.5, 1.0, 0.0, 5, 0, 7400)
 | `.state_channel(name, initial=None, *, versions=(1,))` -> `StateChannel` | `.set(value)`, `.value`; `.send_to(peer, value, ts=None)` -> int pushes a value to one peer's subscriptions only (the channel value is unchanged). |
 | `.stream_channel(name, layout, *, versions=(1,), rate_hz=None, queue=None)` -> `StreamChannel` | `.send(body, t_ns=None)`, `.send_values(*values, t_ns=None)`. |
 | `Channel` | `.subscriber_count`, `.active`, `.on_active(bool)` (first subscriber came / last left), `.on_subscribe(req)` (may refuse), `.close()`. |
-| `Peer` | One connection: `.info` (`PeerInfo`), `.pid` (from the OS), `.decl`, `.run`, `.call(method, params=None, *, version=1, timeout=5.0, idempotency_key=None, on_progress=None)`, `.call_async(...)` -> `PendingCall`, `.subscribe(channel, callback, *, version=1, options=None, on_end=None, deliver="auto")` -> `Subscription`, `.ping()`, `.close(code, message)`. |
+| `Peer` | One connection: `.info` (`PeerInfo`), `.pid` (from the OS), `.decl`, `.run`, `.call(method, params=None, *, version=1, timeout=5.0, idempotency_key=None, on_progress=None)`, `.call_async(...)` -> `PendingCall` (`.id`, `.method`, `.done()`, `.result(timeout=None)`, `.exception()`, `.add_done_callback(cb)`, `.cancel(reason="")` -> bool), `.subscribe(channel, callback, *, version=1, options=None, on_end=None, deliver="auto")` -> `Subscription`, `.ping()`, `.close(code, message)`. |
 | `Context` (handlers) | `.peer`, `.method`, `.version`, `.params`, `.idempotency_key`, `.deadline`, `.remaining`, `.cancelled`, `.wait_cancelled(timeout)`, `.progress(data, extend_s=None)`. |
 | `Event` / `Sample` (callbacks) | `Event`: `.channel`, `.seq`, `.ts`, `.data`, `.snapshot`. `Sample`: `.seq`, `.t_ns`, `.dropped`, `.body`, `.values()`, `.as_dict()`. |
 | `Layout(fields, name=None)` | `[(name, type[, count])]`, types `u8 i8 u16 i16 u32 i32 u64 i64 f32 f64`; `.size`, `.pack(*v)`, `.pack_dict(d)`, `.unpack(b)`, `.unpack_dict(b)`. |
 | `PeerInfo(app, name="", version="", process=None, meta={})` | Who this program is. |
 | `KeyFile(path, create=False)`, `default_key_path(workspace=None)`, `ensure_key(path)`, `read_key(path)` | The key file (`<workspace>\ipc\key`), created atomically if missing. |
 | `pipe_path(app, process=None, user=None)`, `short_name(...)`, `find_workspace()`, `list_endpoints(dir)`, `registry_dir(ws)` | Names and discovery. |
-| Errors | `RemoteError` (`.code`, `.message`, `.details`, `.retry_ms`), `CallTimeout`, `ConnectionLost`, `NotConnected`, `HandshakeError` (`.code`), `EndpointInUse`, `PipeNotFound`, `KeyFileError`, `ProtocolError`. |
-| `stintmate_ipc.aio` | `AsyncClient(client)`: `await .call(...)`, `async with .subscribe(channel) as events: async for ev in events`, `wrap_call(pending)`. |
+| Errors | `RemoteError` (`.code`, `.message`, `.details`, `.retry_ms`), `CallTimeout`, `CallCancelled`, `ConnectionLost`, `NotConnected`, `HandshakeError` (`.code`), `EndpointInUse`, `PipeNotFound`, `KeyFileError`, `ProtocolError`. |
+| `stintmate_ipc.aio` | `AsyncClient(client)`: `await .call(...)` (cancelling the task, or an `asyncio.wait_for` timeout, sends `cancel`), `async with .subscribe(channel) as events: async for ev in events`, `wrap_call(pending)`. |
 
 ## Threads, and embedding in an app
 
@@ -167,6 +167,20 @@ client.subscribe("pitwall.lap_completed", bridge.lap.emit)   # emit is thread-sa
 Calls from the GUI thread should be `call_async(...)` with `add_done_callback` emitting a
 signal, so the GUI never waits on the pipe.
 
+## Cancelling a call
+
+```python
+pc = client.call_async("voice.agent_task", params, timeout=None)
+...
+if pc.cancel("the user pressed Cancel"):   # False: it had already finished
+    ...                                    # the owner got `cancel`; pc.result() raises CallCancelled
+```
+
+`cancel()` never blocks and may be called from any thread. The call's done callbacks run on
+the thread that cancelled. In the handler, `ctx.cancelled` / `ctx.wait_cancelled(timeout)`
+tell it to stop. Under asyncio, cancelling the task that awaits `AsyncClient.call` does the
+same.
+
 ## The conformance checker
 
 `stintmate-ipc-check` tests an implementation of the protocol, in any language.
@@ -183,7 +197,7 @@ stintmate-ipc-check keygen [PATH]
 - **server**: connects to your endpoint (`\\.\pipe\stintmate-...` or the short name) and
   checks the hello, both MACs, the refusal of a wrong MAC, an unsupported version, a
   malformed auth and a silent client, ping, ignoring unknown types/keys/kinds, the error
-  codes, chunk reassembly, protocol errors, every declared channel (fields, snapshots,
+  codes, a `cancel` for an unknown id (ignored), chunk reassembly, protocol errors, every declared channel (fields, snapshots,
   layouts, sequence numbers, timestamps, rate), duplicate subscriptions, the heartbeat and
   `bye`. `--call` also calls methods you name (they may have side effects).
 - **client**: serves a test endpoint on `<pipe>` (declaring `check.echo`, `check.fail`,

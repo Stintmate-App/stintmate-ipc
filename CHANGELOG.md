@@ -3,9 +3,20 @@
 The specification (SPEC.md) and the Python package are versioned separately: the
 specification by wire version and revision (2.0), the package by semantic versioning.
 
-## Unreleased
+### Package 0.1.2, 2026-10-22
 
+- Public cancel: `PendingCall.cancel(reason="") -> bool` sends `cancel`, fails the call with
+  the new `CallCancelled` (not a `CallTimeout`), runs its done callbacks on the calling
+  thread and ignores the late `res`. False when the call was already done or its response
+  won the race. Callable from any thread, a callback or an inline handler. No wire change.
+- A call's deadline is now enforced without a waiter: the heartbeat tick fails expired calls
+  with `CallTimeout` (SPEC.md 15), so a call followed only by done callbacks ends on time.
+  One scan of the in-flight calls per 0.25 s tick (26 us for 1000 calls).
+- asyncio: cancelling the awaiting task, or an `asyncio.wait_for` timeout, sends `cancel`.
+- Vectors `cancel_unknown_id` and `res_after_cancel`; conformance check `S24` (a `cancel`
+  for an unknown id is ignored).
 - Licensed under the Apache License 2.0 (LICENSE, NOTICE).
+- `Peer._call_timed_out` is replaced by the private `Peer._give_up`.
 
 ### Specification revision 2.0 (wire version 2), 2026-10-20
 

@@ -1173,6 +1173,11 @@ call(method, params):
     return pending[id].wait(5 s)                           # on timeout: enqueue cancel
 ```
 
+Expose a cancel to the program as well: a handle for the call whose `cancel()` sends
+`cancel`, fails the call locally with an error distinct from a timeout, and ignores the late
+`res` (SPEC.md 10.3). Enforce the deadline even when nobody is waiting on the call (a timer
+or a periodic sweep), as section 15 requires.
+
 ### 19.3 C# sketch (.NET 8)
 
 ```csharp

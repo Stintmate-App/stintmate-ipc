@@ -200,6 +200,34 @@ def merge(reps: list[dict]) -> dict:
     return out
 
 
+def bench_sweep(n: int = 1000, repeat: int = 200) -> dict:
+    """One deadline sweep (``Peer._expire_calls``, run every 0.25 s by the heartbeat thread)
+    over ``n`` in-flight calls, none expired: the cost of the worst case, in microseconds."""
+    from stintmate_ipc.peer import PendingCall
+    from stintmate_ipc import Client, Endpoint, PeerInfo
+    key = os.urandom(32)
+    pipe = f"stintmate-bench-{os.getpid()}"
+    ep = Endpoint(PeerInfo("benchsrv"), key, pipe=pipe)
+    ep.start()
+    c = Client(pipe, PeerInfo("benchcli"), key)
+    peer = c.connect(5)
+    with peer._lock:
+        for i in range(n):
+            peer._calls[10_000 + i] = PendingCall(peer, 10_000 + i, "b.x", 600.0, None)
+    times = []
+    for _ in range(repeat):
+        t0 = time.perf_counter_ns()
+        peer._expire_calls(time.perf_counter())
+        times.append(time.perf_counter_ns() - t0)
+    with peer._lock:
+        peer._calls.clear()
+    c.close()
+    ep.stop()
+    times.sort()
+    return {"n": n, "p50_us": times[len(times) // 2] / 1000,
+            "p99_us": times[int(len(times) * 0.99)] / 1000, "max_us": times[-1] / 1000}
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in ("server", "rr", "sub"):
         role, args = sys.argv[1], sys.argv[2:]
@@ -216,7 +244,7 @@ def main() -> int:
     ap.add_argument("--json", type=Path, help="write the results here")
     ap.add_argument("--deliver", default="auto", choices=("auto", "thread", "inline"))
     ap.add_argument("--only", default="rr,event,stream,stream3",
-                    help="comma-separated scenarios (rr, event, stream, stream3)")
+                    help="comma-separated scenarios (rr, event, stream, stream3; sweep: the deadline sweep, not run by default)")
     ap.add_argument("--scale", type=float, default=1.0, help="multiply every n")
     ap.add_argument("--repeat", type=int, default=1,
                     help="run each scenario N times and report the medians")
@@ -226,6 +254,11 @@ def main() -> int:
             "stream": ("stream", 6000, 200, 1), "stream3": ("stream", 3000, 200, 3)}
     runs = []
     for k in a.only.split(","):
+        if k == "sweep":
+            r = bench_sweep()
+            print(f"sweep over {r['n']} in-flight calls: p50 {r['p50_us']:.0f} us, "
+                  f"p99 {r['p99_us']:.0f} us, max {r['max_us']:.0f} us")
+            continue
         m, n, rate, subs = plan[k]
         reps = [run_scenario(m, int(n * q), rate, subs, a.deliver) for _ in range(a.repeat)]
         runs.append(merge(reps))

@@ -42,6 +42,14 @@ the reader (`deliver="auto"` = inline for streams), handlers on worker threads.
 | stream, `deliver="thread"` | 47 | 76 | 97 | 1.04 % | The callback lane's thread hand-off per sample costs ~0.5 % of a core at 200 Hz; this is why streams default to inline. |
 | stream, `deliver="inline"` (explicit) | 41 | 66 | 86 | 0.47 % | Same as the default. |
 
+## Deadline sweep (0.1.2)
+
+The heartbeat thread (every 0.25 s) fails the calls whose deadline passed, so a call nobody
+waits on still times out (SPEC.md 15). Measured 2026-10-22 on the same PC with
+`uv run python bench/bench.py --only sweep`: one sweep over **1000 in-flight calls**, none
+expired (the worst case for the scan), p50 **26 us**, p99 30 us, max 31 us (200 sweeps).
+Normally 0-3 calls are in flight: the sweep is a few microseconds every 0.25 s.
+
 ## Baselines on the same PC, same night
 
 | Transport | rr p50 | event p50 | stream p50 | |
