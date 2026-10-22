@@ -11,9 +11,11 @@ import random
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from . import _win32
@@ -197,6 +199,25 @@ class SubscribeRequest:
         self.options = options
 
 
+@dataclass(frozen=True)
+class SubscriptionView:
+    """A read-only view of one subscription to a channel this process owns, for
+    ``EventChannel.publish(accept=...)``. ``peer``: who subscribed (:class:`PeerInfo`:
+    ``app``, ``process``, ``name``, ``version``, ``meta``); ``pid``: its process id from
+    the OS (``None`` if unknown); ``version``: the channel version it subscribed to;
+    ``options``: its ``options`` map (empty when it sent none; read-only)."""
+
+    peer: PeerInfo
+    pid: int | None
+    version: int
+    options: Mapping[str, Any]
+
+    @classmethod
+    def _of(cls, sub: Any) -> SubscriptionView:
+        return cls(sub.peer.info, getattr(sub.peer, "pid", None), sub.version,
+                   MappingProxyType(sub.options or {}))
+
+
 class Channel:
     """A channel this process owns. Subclasses: :class:`EventChannel`,
     :class:`StateChannel`, :class:`StreamChannel`.
@@ -258,19 +279,36 @@ class EventChannel(Channel):
 
     kind = EVENT
 
-    def publish(self, data: Any, *, ts: int | None = None, version: int | None = None) -> int:
-        """Send ``data`` to every subscriber (only those of ``version`` when given).
-        Never blocks. Returns the number of subscriptions it was queued for."""
+    def publish(self, data: Any, *, ts: int | None = None, version: int | None = None,
+                accept: Callable[[SubscriptionView], bool] | None = None) -> int:
+        """Send ``data`` to every subscriber (only those of ``version`` when given). Never
+        blocks. Returns the number of subscriptions it was queued for.
+
+        ``accept(view)``: when given, only the subscriptions it returns true for get the
+        event. It receives a read-only :class:`SubscriptionView` (who subscribed and with
+        which options), runs on the calling thread, must be quick and must not block; if
+        it raises, that subscription is skipped. The payload is packed once, and only if
+        some subscription takes it. A subscription that ends meanwhile is skipped."""
         subs = self._subs
         if not subs:
             return 0
-        packed = wire.pack(data)
+        packed: bytes | None = None
         t = now_ns() if ts is None else ts
         n = 0
         for sub in subs:
-            if version is None or sub.version == version:
-                sub.peer._offer_event(sub, t, packed)
-                n += 1
+            if version is not None and sub.version != version:
+                continue
+            if accept is not None:
+                try:
+                    if not accept(SubscriptionView._of(sub)):
+                        continue
+                except Exception:  # noqa: BLE001 - a bad filter skips its subscription
+                    log.exception("%s: accept failed", self.name)
+                    continue
+            if packed is None:
+                packed = wire.pack(data)
+            sub.peer._offer_event(sub, t, packed)
+            n += 1
         return n
 
     def send_to(self, peer: Peer, data: Any, *, ts: int | None = None,

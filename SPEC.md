@@ -1386,6 +1386,19 @@ security descriptor for the user: Tokio's `create_with_security_attributes_raw`.
   types and keys.
 - Never block a game loop on the pipe: hand samples to the writer and drop the oldest.
 
+### 19.6 Subscription options and per-subscriber delivery
+
+A subscription's `o` map (10.6) is opaque to the protocol: the owner defines it per channel
+(a rate, a filter such as `{"mine": true}`) and validates it, refusing with `bad_request`.
+To deliver an event only to some subscribers, the owner keeps the decision on its side: it
+looks at each subscription's peer identity (`app`, `process`) and `o`, and queues the event
+only for those it accepts. An implementation SHOULD offer this as a public filtered publish
+(the Python package: `EventChannel.publish(data, accept=fn)`, where `fn` gets a read-only
+view with the peer, the version and the options), SHOULD serialise the payload once however
+many subscribers take it, MUST NOT let a failing filter stop the delivery to the others, and
+MUST NOT block. A filtered-out subscriber sees nothing: no `evt`, no gap in `seq` (the
+sequence counts the events sent to that subscription).
+
 ## 20. History
 
 | Version | Date | |
