@@ -1394,7 +1394,8 @@ To deliver an event only to some subscribers, the owner keeps the decision on it
 looks at each subscription's peer identity (`app`, `process`) and `o`, and queues the event
 only for those it accepts. An implementation SHOULD offer this as a public filtered publish
 (the Python package: `EventChannel.publish(data, accept=fn)`, where `fn` gets a read-only
-view with the peer, the version and the options), SHOULD serialise the payload once however
+view with the peer, the version, the options and the connection, so an event can go to the
+connection that made a request only), SHOULD serialise the payload once however
 many subscribers take it, MUST NOT let a failing filter stop the delivery to the others, and
 MUST NOT block. A filtered-out subscriber sees nothing: no `evt`, no gap in `seq` (the
 sequence counts the events sent to that subscription).

@@ -403,6 +403,21 @@ def test_publish_accept_filters_by_peer_app(endpoint, client):
     assert got_a == []
 
 
+def test_publish_accept_sees_the_connection(endpoint, client):
+    """``view.connection`` is the owner-side Peer of the subscription, one per client: an
+    event can go to the connection that made a request only."""
+    from stintmate_ipc import Peer
+    ev, got_a, got_b = _two_clients(endpoint, client, app_b="hub-test")
+    views = []
+    ev.publish("x", accept=lambda v: views.append(v) or False)
+    assert len(views) == 2 and all(isinstance(v.connection, Peer) for v in views)
+    assert views[0].connection is not views[1].connection
+    owner = next(v.connection for v in views if v.peer.app == "hub-test")
+    assert ev.publish("only b", accept=lambda v: v.connection is owner) == 1
+    wait_for(lambda: len(got_b) == 1)
+    assert got_a == []
+
+
 def test_publish_accept_raising_skips_only_that_subscription(endpoint, client):
     ev, got_a, got_b = _two_clients(endpoint, client)
 

@@ -205,17 +205,21 @@ class SubscriptionView:
     ``EventChannel.publish(accept=...)``. ``peer``: who subscribed (:class:`PeerInfo`:
     ``app``, ``process``, ``name``, ``version``, ``meta``); ``pid``: its process id from
     the OS (``None`` if unknown); ``version``: the channel version it subscribed to;
-    ``options``: its ``options`` map (empty when it sent none; read-only)."""
+    ``options``: its ``options`` map (empty when it sent none; read-only); ``connection``:
+    the connection it arrived on, the same :class:`Peer` a method handler sees as
+    ``ctx.peer``, so an event can go only to the connection that made a request
+    (``view.connection is owner``)."""
 
     peer: PeerInfo
     pid: int | None
     version: int
     options: Mapping[str, Any]
+    connection: Any = None
 
     @classmethod
     def _of(cls, sub: Any) -> SubscriptionView:
         return cls(sub.peer.info, getattr(sub.peer, "pid", None), sub.version,
-                   MappingProxyType(sub.options or {}))
+                   MappingProxyType(sub.options or {}), sub.peer)
 
 
 class Channel:
