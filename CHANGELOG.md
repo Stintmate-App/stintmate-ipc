@@ -3,6 +3,13 @@
 The specification (SPEC.md) and the Python package are versioned separately: the
 specification by wire version and revision (2.0), the package by semantic versioning.
 
+### Package 0.1.4, 2026-10-23
+
+- Fix: `PendingCall.result()` could return `None` at the call's deadline when the heartbeat's
+  sweep (0.1.2) had already taken the expired call but not yet failed it: the waiter's own
+  give-up lost the race and returned the empty result. It now waits for the winner's outcome
+  (the sweep's `CallTimeout`, or the response). No wire change.
+
 ### Package 0.1.3, 2026-10-22
 
 - Public filtered publish: `EventChannel.publish(data, *, ts=None, version=None, accept=None)`.

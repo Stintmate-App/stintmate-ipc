@@ -161,7 +161,11 @@ class PendingCall:
                 break
             t = time.perf_counter()
             if self.deadline is not None and t >= self.deadline:
-                self.peer._give_up(self, CallTimeout(f"{self.method}: no response in time"))
+                if not self.peer._give_up(self, CallTimeout(f"{self.method}: no response in "
+                                                            "time")):
+                    # The response or the heartbeat's sweep took the call first and is about
+                    # to finish it: wait for that outcome instead of returning a None result.
+                    self._wait(None)
                 break
             if end is not None and t >= end:
                 raise CallTimeout(f"{self.method}: no response yet")

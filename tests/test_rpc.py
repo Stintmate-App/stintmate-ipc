@@ -590,3 +590,19 @@ def test_deadline_sweep_cost(endpoint, client):
     assert time.perf_counter() - t0 < 0.01  # generous bound; the benchmark has the number
     with peer._lock:
         peer._calls.clear()
+
+
+def test_result_waits_for_the_sweep_that_took_the_call(endpoint, client):
+    # The heartbeat's sweep pops an expired call and finishes it just after: a waiter whose
+    # own give-up loses that race must get the sweep's CallTimeout, never a None result.
+    ep = endpoint()
+    _slow_cancel_aware(ep)
+    ep.start()
+    c = client()
+    c.connect(5)
+    pc = c.call_async("t.slow", timeout=0.2)
+    with pc.peer._lock:  # the sweep took it ...
+        assert pc.peer._calls.pop(pc.id, None) is pc
+    threading.Timer(0.4, lambda: pc._finish(error=CallTimeout("t.slow: swept"))).start()
+    with pytest.raises(CallTimeout, match="swept"):  # ... and finishes it after the deadline
+        pc.result()
