@@ -3,6 +3,16 @@
 The specification (SPEC.md) and the Python package are versioned separately: the
 specification by wire version and revision (2.0), the package by semantic versioning.
 
+### Package 0.1.3, 2026-10-22
+
+- Public filtered publish: `EventChannel.publish(data, *, ts=None, version=None, accept=None)`.
+  `accept(view)` gets a read-only `SubscriptionView` (`peer`: `PeerInfo`, `pid`, `version`,
+  `options`: read-only map, empty when none; `connection`: the `Peer` it arrived on, as `Context.peer`) and returns whether that subscription takes the
+  event; a raising `accept` skips its subscription (logged). The payload is packed once, and
+  not at all when nobody takes it. Returns the number delivered; never blocks. Without
+  `accept` nothing changes. Replaces walking the private `_subs` / `Peer._offer_event`.
+- `SubscriptionView` is exported. SPEC.md 19.6 (guide) on subscription options. No wire change.
+
 ### Package 0.1.2, 2026-10-22
 
 - Public cancel: `PendingCall.cancel(reason="") -> bool` sends `cancel`, fails the call with

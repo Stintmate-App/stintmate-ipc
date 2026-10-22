@@ -30,11 +30,12 @@ from .layout import Layout
 from .naming import (RegistryEntry, find_workspace, list_endpoints, pipe_path, pipe_user,
                      registry_dir, short_name)
 from .node import (Channel, Client, ClientSubscription, Context, Endpoint, EventChannel,
-                   IdempotencyCache, StateChannel, StreamChannel, SubscribeRequest, connect)
+                   IdempotencyCache, StateChannel, StreamChannel, SubscribeRequest,
+                   SubscriptionView, connect)
 from .peer import Event, PendingCall, Peer, Sample, Subscription
 from .wire import PROTOCOL_VERSION
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "PROTOCOL_VERSION", "CallCancelled", "CallTimeout", "Channel", "ChannelDecl", "Client",
@@ -43,7 +44,7 @@ __all__ = [
     "IpcError", "KeyFile", "KeyFileError", "Layout", "MethodDecl", "NotConnected", "Peer",
     "PeerInfo", "PendingCall", "PipeBusy", "PipeClosed", "PipeError", "PipeNotFound",
     "ProtocolError", "RegistryEntry", "RemoteError", "Sample", "StateChannel",
-    "StreamChannel", "SubscribeRequest", "Subscription", "connect", "default_key_path",
+    "StreamChannel", "SubscribeRequest", "Subscription", "SubscriptionView", "connect", "default_key_path",
     "ensure_key", "find_workspace", "list_endpoints", "pipe_path", "pipe_user", "read_key",
     "registry_dir", "short_name",
 ]

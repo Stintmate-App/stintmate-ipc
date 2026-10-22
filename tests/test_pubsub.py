@@ -352,3 +352,110 @@ def test_send_to_one_subscriber_on_event_and_state_channels(endpoint, client):
     assert all(e.data != {"n": 99} for e in st_b)
     assert st.value == {"n": 0}
     assert ev.send_to(peers["a"], 1, version=2) == 0
+
+
+# ------------------------------------------------------------ filtered publish (0.1.3)
+
+
+def _two_clients(endpoint, client, app_b="other"):
+    from stintmate_ipc import PeerInfo
+
+    ep = endpoint()
+    ev = ep.event_channel("t.rep")
+    ep.start()
+    a = client()
+    b = client(info=PeerInfo(app_b, name="b", version="1")) if app_b != "other" else client()
+    a.connect(5)
+    b.connect(5)
+    got_a, got_b = [], []
+    a.subscribe("t.rep", got_a.append, options={"mine": True})
+    b.subscribe("t.rep", got_b.append)
+    wait_for(lambda: ev.subscriber_count == 2)
+    return ev, got_a, got_b
+
+
+def test_publish_accept_filters_by_option_and_counts(endpoint, client):
+    ev, got_a, got_b = _two_clients(endpoint, client)
+    seen = []
+
+    def accept(view):
+        seen.append(view)
+        return bool(view.options.get("mine"))
+
+    assert ev.publish({"x": 1}, accept=accept) == 1
+    wait_for(lambda: len(got_a) == 1)
+    assert got_a[0].data == {"x": 1} and got_b == []
+    v = [s for s in seen if s.options.get("mine")][0]
+    assert v.version == 1 and v.pid and v.peer.app
+    assert [s.options for s in seen if not s.options.get("mine")] == [{}]
+    with pytest.raises(TypeError):
+        v.options["mine"] = False
+    assert ev.publish({"x": 2}, accept=lambda v: False) == 0
+    assert ev.publish({"x": 3}) == 2
+    wait_for(lambda: len(got_a) == 2 and len(got_b) == 1)
+    assert got_a[1].data == {"x": 3}
+
+
+def test_publish_accept_filters_by_peer_app(endpoint, client):
+    ev, got_a, got_b = _two_clients(endpoint, client, app_b="hub-test")
+    assert ev.publish("hi", accept=lambda v: v.peer.app == "hub-test") == 1
+    wait_for(lambda: len(got_b) == 1)
+    assert got_a == []
+
+
+def test_publish_accept_sees_the_connection(endpoint, client):
+    """``view.connection`` is the owner-side Peer of the subscription, one per client: an
+    event can go to the connection that made a request only."""
+    from stintmate_ipc import Peer
+    ev, got_a, got_b = _two_clients(endpoint, client, app_b="hub-test")
+    views = []
+    ev.publish("x", accept=lambda v: views.append(v) or False)
+    assert len(views) == 2 and all(isinstance(v.connection, Peer) for v in views)
+    assert views[0].connection is not views[1].connection
+    owner = next(v.connection for v in views if v.peer.app == "hub-test")
+    assert ev.publish("only b", accept=lambda v: v.connection is owner) == 1
+    wait_for(lambda: len(got_b) == 1)
+    assert got_a == []
+
+
+def test_publish_accept_raising_skips_only_that_subscription(endpoint, client):
+    ev, got_a, got_b = _two_clients(endpoint, client)
+
+    def accept(view):
+        if view.options.get("mine"):
+            raise RuntimeError("boom")
+        return True
+
+    assert ev.publish("ok", accept=accept) == 1
+    wait_for(lambda: len(got_b) == 1)
+    assert got_a == []
+
+
+def test_publish_accept_packs_once_and_not_when_nobody_takes(endpoint, client, monkeypatch):
+    from stintmate_ipc import wire
+
+    ev, got_a, got_b = _two_clients(endpoint, client)
+    calls = []
+    real = wire.pack
+    monkeypatch.setattr(wire, "pack", lambda d: (calls.append(d) if isinstance(d, str) else None, real(d))[1])
+    assert ev.publish("p", accept=lambda v: True) == 2
+    assert len(calls) == 1
+    assert ev.publish("q", accept=lambda v: False) == 0
+    assert len(calls) == 1
+    wait_for(lambda: len(got_a) == 1 and len(got_b) == 1)
+
+
+def test_publish_accept_survives_subscription_ending(endpoint, client):
+    ev, got_a, got_b = _two_clients(endpoint, client)
+
+    def accept(view):
+        # the subscription ends while the loop runs
+        for sub in ev._subs:
+            if (sub.options or {}).get("mine"):
+                sub.active = False
+        return True
+
+    n = ev.publish("z", accept=accept)
+    assert n == 2  # queued for the ones still in the snapshot; the ended one drops it
+    wait_for(lambda: len(got_b) == 1)
+    assert got_a == []
