@@ -103,6 +103,8 @@ pub struct ConnectionInfo {
     pub heartbeat_ms: u32,
     /// The client's process id from the operating system (server side only, SPEC 3.4).
     pub client_pid: Option<u32>,
+    /// The server's process id from the operating system (client side, over a named pipe).
+    pub server_pid: Option<u32>,
 }
 
 /// Who ended a connection.
@@ -750,6 +752,12 @@ impl Connection {
         if inner.calls.insert(id, entry).is_err() {
             return Err(inner.lost());
         }
+        // The request goes out first: the deadline's task starts off the critical path (it
+        // sees `done` if the response already came).
+        if let Err(e) = inner.send_message(&build(id)).await {
+            inner.calls.complete(id, Err(Error::NotConnected));
+            return Err(e);
+        }
         if let Some(mut drx) = drx {
             let me = inner.clone();
             let send_cancel = options.send_cancel;
@@ -770,10 +778,6 @@ impl Connection {
                     }
                 }
             });
-        }
-        if let Err(e) = inner.send_message(&build(id)).await {
-            inner.calls.complete(id, Err(Error::NotConnected));
-            return Err(e);
         }
         Ok(PendingCall {
             handle: CallHandle {
@@ -1063,19 +1067,18 @@ fn handle_req(inner: &Arc<Inner>, msg: &Value) {
     // Called here, in arrival order, so an `ordered` method can queue itself in order.
     let request = inner.handler.request(ctx);
     let me = inner.clone();
+    // One task per request: the handler's future is polled here, a panic caught per poll
+    // (a second spawned task per request cost about 2 us of every round trip).
     inner.tracker.spawn(async move {
-        let work = me.tracker.spawn(request);
-        let abort = work.abort_handle();
         let outcome = tokio::select! {
-            r = work => r,
+            r = CatchUnwind(request) => r,
             () = me.abort.cancelled() => {
-                abort.abort();
                 lock(&me.inbound).remove(&id);
                 return;
             }
         };
-        let result = outcome.unwrap_or_else(|e| {
-            warn!("handler of request {id} failed: {e}");
+        let result = outcome.unwrap_or_else(|()| {
+            warn!("handler of request {id} panicked");
             Err(RemoteError::new("internal", "the method failed"))
         });
         lock(&me.inbound).remove(&id);
@@ -1083,6 +1086,21 @@ fn handle_req(inner: &Arc<Inner>, msg: &Value) {
             debug!("res {id} not sent: {e}");
         }
     });
+}
+
+/// Polls a future, turning a panic in a poll into `Err(())`.
+struct CatchUnwind<F>(F);
+
+impl<F: Future + Unpin> Future for CatchUnwind<F> {
+    type Output = Result<F::Output, ()>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let f = &mut self.0;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Pin::new(f).poll(cx))) {
+            Ok(Poll::Ready(v)) => Poll::Ready(Ok(v)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(_) => Poll::Ready(Err(())),
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------- handshake
@@ -1193,13 +1211,29 @@ where
         peer_limits: accepted.peer_limits,
         heartbeat_ms,
         client_pid,
+        server_pid: None,
     };
     Ok(Connection::start(io, reader, info, handler, opts))
 }
 
 /// Runs the client's side of the handshake on `io` and starts the connection.
 pub async fn connect_io<IO>(
+    io: IO,
+    config: ClientConfig,
+    key: Key,
+    handler: Arc<dyn Handler>,
+    opts: ConnectionOptions,
+) -> Result<Connection, Error>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    connect_io_from(io, None, config, key, handler, opts).await
+}
+
+/// [`connect_io`] knowing the server's process id.
+async fn connect_io_from<IO>(
     mut io: IO,
+    server_pid: Option<u32>,
     config: ClientConfig,
     key: Key,
     handler: Arc<dyn Handler>,
@@ -1235,6 +1269,7 @@ where
         peer_limits: est.peer_limits,
         heartbeat_ms: est.heartbeat_ms,
         client_pid: None,
+        server_pid,
     };
     Ok(Connection::start(io, reader, info, handler, opts))
 }
@@ -1248,7 +1283,8 @@ pub async fn connect(
     opts: ConnectionOptions,
 ) -> Result<Connection, Error> {
     let pipe = open_pipe(path, opts.open_deadline).await?;
-    connect_io(pipe, config, key, handler, opts).await
+    let pid = crate::transport::server_pid(&pipe);
+    connect_io_from(pipe, pid, config, key, handler, opts).await
 }
 
 /// Serves an accepted client: [`accept_io`] on its pipe.

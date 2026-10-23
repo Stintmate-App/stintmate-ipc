@@ -102,6 +102,10 @@ async fn client_keeps_trying_until_the_server_starts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn endpoint_stop_says_bye_and_the_client_close_is_seen_by_the_server() {
     let (ep, c) = pair().await;
+    // The client sees `welcome` before the server has opened its side: wait for that, so
+    // that the hooks below really come after the pair's peer.
+    eventually(3, "the server's peer", || ep.peers().len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let connected = Arc::new(AtomicUsize::new(0));
     let gone = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (n, g) = (connected.clone(), gone.clone());

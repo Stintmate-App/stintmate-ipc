@@ -274,6 +274,11 @@ impl Endpoint {
     /// Stops listening, says `bye shutting_down` to every peer and waits briefly for them to
     /// close; withdraws the registry entry.
     pub async fn stop(&self) {
+        self.stop_with("shutting_down", "the endpoint stops").await;
+    }
+
+    /// As [`stop`](Self::stop), saying `bye` with `code` and `message`.
+    pub async fn stop_with(&self, code: &str, message: &str) {
         let running = lock(&self.inner.running).take();
         if let Some(r) = running {
             r.stop.cancel();
@@ -281,7 +286,7 @@ impl Endpoint {
         }
         let peers = self.node.peers();
         for p in &peers {
-            p.close("shutting_down", "the endpoint stops");
+            p.close(code, message);
         }
         for p in peers {
             let _ = timeout(Duration::from_secs(2), p.conn.wait_closed()).await;

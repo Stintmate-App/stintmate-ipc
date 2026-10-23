@@ -473,7 +473,7 @@ impl Peer {
         PeerInfo::from_rust(py, self.inner.info())
     }
 
-    /// The other end's process id (server side).
+    /// The other end's process id, from the operating system (either side).
     #[getter]
     fn pid(&self) -> Option<u32> {
         self.inner.pid()
@@ -638,11 +638,14 @@ impl Client {
         info: &Bound<'_, PeerInfo>,
         key: &Bound<'_, PyAny>,
         reconnect: bool,
+        event_queue: usize,
     ) -> PyResult<Self> {
         let info = info.borrow().to_rust(py)?;
         let key = key_source(key)?;
-        let inner = blocking::Client::with(pipe, info, key, |b| b.reconnect(reconnect))
-            .map_err(|e| to_pyerr(py, &e))?;
+        let inner = blocking::Client::with(pipe, info, key, |b| {
+            b.reconnect(reconnect).event_queue(event_queue.max(1))
+        })
+        .map_err(|e| to_pyerr(py, &e))?;
         let last_error: Arc<Mutex<Option<ErrSpec>>> = Arc::default();
         let user_cb: Arc<Mutex<Option<Py<PyAny>>>> = Arc::default();
         {
@@ -689,16 +692,20 @@ impl Client {
 
 #[pymethods]
 impl Client {
+    /// `event_queue`: how many events of one subscription may wait for a slow callback before
+    /// the subscription ends `overloaded` (and is made again 1 s later); state values coalesce
+    /// to the latest and stream samples drop the oldest instead (SPEC 12.4).
     #[new]
-    #[pyo3(signature = (pipe, info, key, *, reconnect=true))]
+    #[pyo3(signature = (pipe, info, key, *, reconnect=true, event_queue=1024))]
     fn new(
         py: Python<'_>,
         pipe: &str,
         info: &Bound<'_, PeerInfo>,
         key: &Bound<'_, PyAny>,
         reconnect: bool,
+        event_queue: usize,
     ) -> PyResult<PyClassInitializer<Self>> {
-        let client = Self::build(py, pipe, info, key, reconnect)?;
+        let client = Self::build(py, pipe, info, key, reconnect, event_queue)?;
         let node = crate::endpoint::Node::new(&client.inner);
         Ok(PyClassInitializer::from(node).add_subclass(client))
     }
@@ -861,10 +868,15 @@ impl Client {
     }
 }
 
-/// Opens one connection (no reconnect): handshake and return the `Peer`. `node` is accepted
-/// for the 0.1.x signature; a node's own methods and channels arrive with the endpoint (T7).
+/// Opens one connection (no reconnect): handshake and return the `Peer`.
+///
+/// `node`: a `Client` made with `reconnect=False` whose methods and channels this connection
+/// offers; it becomes that client's connection (its `call`, `connected` and `peer` use it) and
+/// the caller owns the reconnection (call `connect` again after the peer closes). `pipe` must
+/// then be the client's own pipe; `info` and `key` are the client's.
 #[pyfunction]
-#[pyo3(signature = (pipe, info, key, *, timeout=5.0, node=None))]
+#[pyo3(signature = (pipe, info, key, *, timeout=5.0, node=None, event_queue=1024))]
+#[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
     pipe: &str,
@@ -872,9 +884,19 @@ pub fn connect(
     key: &Bound<'_, PyAny>,
     timeout: f64,
     node: Option<&Bound<'_, PyAny>>,
+    event_queue: usize,
 ) -> PyResult<Peer> {
-    let _ = node;
-    let client = Client::build(py, pipe, info, key, false)?;
+    if let Some(n) = node.filter(|n| !n.is_none()) {
+        let Ok(c) = n.cast::<Client>() else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "node must be a Client made with reconnect=False",
+            ));
+        };
+        let c = c.borrow();
+        c.inner.start();
+        return c.wait(py, secs("timeout", timeout)?);
+    }
+    let client = Client::build(py, pipe, info, key, false, event_queue)?;
     client.inner.start();
     match client.wait(py, secs("timeout", timeout)?) {
         Ok(p) => Ok(Peer::new(p.inner, Some(client.inner.clone()))),

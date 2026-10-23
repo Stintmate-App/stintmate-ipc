@@ -879,9 +879,8 @@ impl Endpoint {
     /// Stops serving and says `bye` to every peer.
     #[pyo3(signature = (code="shutting_down", message="the endpoint stops"))]
     fn stop(&self, py: Python<'_>, code: &str, message: &str) {
-        let _ = (code, message); // the core always says `shutting_down`
         let ep = self.inner.clone();
-        py.detach(move || ep.stop());
+        py.detach(move || ep.stop_with(code, message));
     }
 
     fn __enter__(slf: Py<Self>) -> Py<Self> {

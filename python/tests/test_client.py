@@ -1,5 +1,6 @@
 """The client against a Rust endpoint: calls, timeouts, cancel, progress, subscriptions, GIL."""
 
+import os
 import threading
 import time
 
@@ -29,7 +30,7 @@ def test_call_roundtrip(client):
 def test_peer_properties(client, endpoint):
     p = client.peer
     assert p is not None and p.is_open and client.connected
-    assert p.info.app == "t6test" and p.pid is None
+    assert p.info.app == "t6test" and p.pid == os.getpid()  # the server, from the pipe
     assert len(p.run) == 16
     assert "t.echo" in p.decl.methods and "t.events" in p.decl.channels
     assert p.call("t.echo", {"x": 1}) == {"x": 1}

@@ -18,7 +18,9 @@ use tokio::net::windows::named_pipe::{
 };
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY};
 use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
-use windows_sys::Win32::System::Pipes::{GetNamedPipeClientProcessId, WaitNamedPipeW};
+use windows_sys::Win32::System::Pipes::{
+    GetNamedPipeClientProcessId, GetNamedPipeServerProcessId, WaitNamedPipeW,
+};
 
 use crate::error::Error;
 use crate::security::{SecurityDescriptor, wide};
@@ -193,4 +195,13 @@ pub async fn open_pipe(path: &str, deadline: Duration) -> Result<Pipe, Error> {
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+/// The process id of the server of a pipe this side opened (`None` for an accepted one).
+pub fn server_pid(pipe: &Pipe) -> Option<u32> {
+    let Pipe::Client(c) = pipe else { return None };
+    let mut pid = 0u32;
+    // SAFETY: a valid pipe handle and a valid out pointer.
+    let ok = unsafe { GetNamedPipeServerProcessId(c.as_raw_handle(), &mut pid) };
+    (ok != 0 && pid != 0).then_some(pid)
 }

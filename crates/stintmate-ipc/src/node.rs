@@ -798,9 +798,10 @@ impl Peer {
         &self.conn.info().peer
     }
 
-    /// The other end's process id from the operating system (server side only).
+    /// The other end's process id from the operating system (either side).
     pub fn pid(&self) -> Option<u32> {
-        self.conn.info().client_pid
+        let i = self.conn.info();
+        i.client_pid.or(i.server_pid)
     }
 
     /// The raw connection.
