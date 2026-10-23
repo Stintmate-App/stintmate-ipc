@@ -365,6 +365,7 @@ impl Peer {
     }
     /// Ends the connection with `bye`.
     pub fn close(&self, code: &str, message: &str) {
+        let _guard = runtime().enter(); // closing spawns tasks: needs the runtime context
         self.0.close(code, message);
     }
 
@@ -588,6 +589,12 @@ impl Client {
         let inner = configure(b).build()?;
         let node = Node::new(inner.deref().clone(), Pool::new(8));
         Ok(Client { node, inner })
+    }
+
+    /// Sets the hook called with the error of each failed connection attempt (it runs on the
+    /// runtime: it must not block).
+    pub fn on_connect_error(&self, hook: impl Fn(&Error) + Send + Sync + 'static) {
+        self.inner.on_connect_error(hook);
     }
 
     /// Connects in the background.

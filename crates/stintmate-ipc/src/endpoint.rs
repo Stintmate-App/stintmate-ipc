@@ -333,12 +333,16 @@ async fn serve(ep: Endpoint, accepted: Accepted, stop: CancellationToken) {
             return;
         }
     };
-    let mut cfg = ServerConfig::new(&ep.inner.short, core.info.clone(), core.declarations());
+    let (st, handler) = core.new_handler();
+    let mut cfg = ServerConfig::new(
+        &ep.inner.short,
+        core.info.clone(),
+        core.handshake_declarations(&st),
+    );
     cfg.limits = core.cfg.limits;
     cfg.features = core.cfg.features.clone();
     cfg.heartbeat_ms = core.cfg.heartbeat_ms;
     cfg.run = ep.inner.run.clone();
-    let (st, handler) = core.new_handler();
     match accept(accepted, cfg, key, handler, core.connection_options()).await {
         Ok(conn) => {
             if stop.is_cancelled() {

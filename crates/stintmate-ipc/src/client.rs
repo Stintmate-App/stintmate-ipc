@@ -428,11 +428,14 @@ async fn run(node: Node, inner: Arc<Inner>) {
         let result = match core.key.key() {
             Err(e) => Err(Error::from(e)),
             Ok(key) => {
-                let mut cfg =
-                    ClientConfig::new(&inner.short, core.info.clone(), core.declarations());
+                let (st, handler) = core.new_handler();
+                let mut cfg = ClientConfig::new(
+                    &inner.short,
+                    core.info.clone(),
+                    core.handshake_declarations(&st),
+                );
                 cfg.limits = core.cfg.limits;
                 cfg.features = core.cfg.features.clone();
-                let (st, handler) = core.new_handler();
                 let attempt_fut =
                     connect(&inner.path, cfg, key, handler, core.connection_options());
                 tokio::select! {

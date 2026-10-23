@@ -333,6 +333,14 @@ pub struct NodeCore {
     channels: RwLock<HashMap<String, Arc<ChannelCore>>>,
     peers: Mutex<Vec<Peer>>,
     hooks: Mutex<Hooks>,
+    /// Bumped (under the lock that changes the declarations) at every change; each peer
+    /// remembers the generation it was last told (`PeerState::told_gen`).
+    decl_gen: AtomicU64,
+    /// Serialises the `decl` sends, so an older snapshot never overtakes a newer one.
+    decl_send: Mutex<()>,
+    /// Test hooks (see `Node::__test_after_snapshot`, `Node::__test_refuse_decls`).
+    after_snapshot: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    refuse_decls: AtomicU32,
     lanes: LaneFactory,
     weak: Weak<NodeCore>,
 }
@@ -360,6 +368,10 @@ impl Node {
             channels: RwLock::default(),
             peers: Mutex::default(),
             hooks: Mutex::default(),
+            decl_gen: AtomicU64::new(0),
+            decl_send: Mutex::new(()),
+            after_snapshot: Mutex::new(None),
+            refuse_decls: AtomicU32::new(0),
             lanes,
             weak: weak.clone(),
         }))
@@ -400,14 +412,22 @@ impl Node {
         let cache = (decl.idempotent && opts.idempotency_cache)
             .then(|| IdempotencyCache::new(opts.idempotency_ttl));
         let entry = Arc::new(MethodEntry { decl, f, cache });
-        write(&self.0.methods).insert(name.to_owned(), entry);
+        {
+            let mut g = write(&self.0.methods);
+            g.insert(name.to_owned(), entry);
+            self.0.decl_gen.fetch_add(1, Ordering::SeqCst);
+        }
         self.0.redeclare();
         Ok(())
     }
 
     /// Withdraws a method.
     pub fn remove_method(&self, name: &str) {
-        write(&self.0.methods).remove(name);
+        {
+            let mut g = write(&self.0.methods);
+            g.remove(name);
+            self.0.decl_gen.fetch_add(1, Ordering::SeqCst);
+        }
         self.0.redeclare();
     }
 
@@ -421,6 +441,7 @@ impl Node {
                 )));
             }
             g.insert(name.to_owned(), ch);
+            self.0.decl_gen.fetch_add(1, Ordering::SeqCst);
         }
         self.0.redeclare();
         Ok(())
@@ -493,6 +514,19 @@ impl Node {
         self.0.declarations()
     }
 
+    /// Test support, not API: `f` runs once the next handshake has taken its snapshot of the
+    /// declarations and before the connection is registered.
+    #[doc(hidden)]
+    pub fn __test_after_snapshot(&self, f: impl Fn() + Send + Sync + 'static) {
+        *lock(&self.0.after_snapshot) = Some(Arc::new(f));
+    }
+
+    /// Test support, not API: the next `n` `decl` sends fail as if the writer queue was full.
+    #[doc(hidden)]
+    pub fn __test_refuse_decls(&self, n: u32) {
+        self.0.refuse_decls.store(n, Ordering::SeqCst);
+    }
+
     /// The open connections.
     pub fn peers(&self) -> Vec<Peer> {
         lock(&self.0.peers)
@@ -555,30 +589,96 @@ impl NodeCore {
     }
 
     pub(crate) fn remove_channel(&self, name: &str) {
-        write(&self.channels).remove(name);
+        {
+            let mut g = write(&self.channels);
+            g.remove(name);
+            self.decl_gen.fetch_add(1, Ordering::SeqCst);
+        }
         self.redeclare();
     }
 
-    /// Tells every connected peer what changed (SPEC 9.4); a full queue only delays the
-    /// next change.
+    /// The declarations a handshake carries, with `st` marked as told up to the generation
+    /// read before them (a change that races the snapshot is sent again, never lost).
+    pub(crate) fn handshake_declarations(&self, st: &PeerState) -> Declarations {
+        st.told_gen
+            .store(self.decl_gen.load(Ordering::SeqCst), Ordering::SeqCst);
+        let d = self.declarations();
+        let hook = lock(&self.after_snapshot).take();
+        if let Some(h) = hook {
+            h();
+        }
+        d
+    }
+
+    /// Tells every connected peer whose generation is behind the full current declarations
+    /// (SPEC 9.4).
     fn redeclare(&self) {
         let peers: Vec<Peer> = lock(&self.peers).clone();
-        if peers.is_empty() {
-            return;
+        for p in &peers {
+            self.sync_peer(p);
+        }
+    }
+
+    /// Sends `p` a `decl` when it was last told an older generation. A refused send leaves
+    /// it behind and is retried in the background. Returns whether the peer is settled
+    /// (up to date or gone).
+    fn sync_peer(&self, p: &Peer) -> bool {
+        let _turn = lock(&self.decl_send);
+        let gen_now = self.decl_gen.load(Ordering::SeqCst);
+        if p.st.told_gen.load(Ordering::SeqCst) >= gen_now || !p.is_open() {
+            return true;
         }
         let msg = codec::map([
             ("t", Value::from("decl")),
             ("decl", self.declarations().to_value()),
         ]);
-        for p in peers {
-            if let Err(e) = p.conn.try_send_message(&msg) {
-                debug!("decl not sent: {e}");
+        // Only touched under `decl_send`.
+        let left = self.refuse_decls.load(Ordering::SeqCst);
+        let refused = left > 0;
+        if refused {
+            self.refuse_decls.store(left - 1, Ordering::SeqCst);
+        }
+        let sent = if refused {
+            Err(Error::Invalid("test: decl refused".into()))
+        } else {
+            p.conn.try_send_message(&msg)
+        };
+        match sent {
+            Ok(()) => {
+                p.st.told_gen.fetch_max(gen_now, Ordering::SeqCst);
+                true
+            }
+            Err(e) => {
+                debug!("decl not sent, will retry: {e}");
+                self.schedule_retry(p);
+                false
             }
         }
     }
 
+    fn schedule_retry(&self, p: &Peer) {
+        if p.st.retrying.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (node, p) = (self.weak.clone(), p.clone());
+        self.handle.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let Some(node) = node.upgrade() else { return };
+                if node.sync_peer(&p) {
+                    p.st.retrying.store(false, Ordering::SeqCst);
+                    // A change that failed while this task was still running.
+                    node.sync_peer(&p);
+                    return;
+                }
+            }
+        });
+    }
+
     pub(crate) fn peer_opened(&self, peer: Peer) {
         lock(&self.peers).push(peer.clone());
+        // Whatever changed between the handshake snapshot and now.
+        self.sync_peer(&peer);
         let hook = lock(&self.hooks).on_connect.clone();
         if let Some(h) = hook {
             h(peer);
@@ -632,6 +732,10 @@ pub struct PeerState {
     decl: RwLock<Declarations>,
     outsubs: Mutex<HashMap<u32, Arc<OutSub>>>,
     next_sid: AtomicU32,
+    /// The declarations generation the other end was last told.
+    told_gen: AtomicU64,
+    /// A background retry of a refused `decl` is running.
+    retrying: AtomicBool,
     insubs: Mutex<HashMap<u32, Arc<InSub>>>,
     pump: Pump,
     started: AtomicBool,
@@ -810,6 +914,8 @@ impl PeerState {
             decl: RwLock::new(Declarations::default()),
             outsubs: Mutex::default(),
             next_sid: AtomicU32::new(1),
+            told_gen: AtomicU64::new(0),
+            retrying: AtomicBool::new(false),
             insubs: Mutex::default(),
             pump: Pump::default(),
             started: AtomicBool::new(false),

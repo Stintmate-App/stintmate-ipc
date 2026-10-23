@@ -544,3 +544,54 @@ async fn events_published_by_a_handler_arrive_before_its_res() {
     c.close().await;
     ep.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_channel_added_between_the_snapshot_and_the_registration_is_announced() {
+    let (pipe, k) = (pipe_name(), key());
+    let ep = endpoint(&pipe, k);
+    ep.start().await.unwrap();
+    let c = client(&pipe, k);
+    let adder = c.clone();
+    let made = Arc::new(std::sync::Mutex::new(None));
+    let slot = made.clone();
+    // Runs after the handshake took its snapshot, before the peer is registered.
+    c.__test_after_snapshot(move || {
+        let ch = adder.event_channel("late.ev", &[1]).unwrap();
+        *slot.lock().unwrap() = Some(ch);
+    });
+    c.start();
+    eventually_async(5, "the server to see the late channel", || {
+        let ep = ep.clone();
+        async move {
+            ep.peers()
+                .first()
+                .is_some_and(|p| p.decl().channels.contains_key("late.ev"))
+        }
+    })
+    .await;
+    assert!(made.lock().unwrap().is_some());
+    c.close().await;
+    ep.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decl_refused_by_a_full_queue_is_delivered_later() {
+    let (ep, c) = pair().await;
+    c.__test_refuse_decls(3);
+    let _ch = c.event_channel("retry.ev", &[1]).unwrap();
+    eventually_async(
+        5,
+        "the server to see the channel after the refusals",
+        || {
+            let ep = ep.clone();
+            async move {
+                ep.peers()
+                    .first()
+                    .is_some_and(|p| p.decl().channels.contains_key("retry.ev"))
+            }
+        },
+    )
+    .await;
+    c.close().await;
+    ep.stop().await;
+}
