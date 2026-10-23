@@ -18,6 +18,9 @@ use crate::error::Error;
 /// Called on the connection's reader with the `d` of each `prog` of a call.
 pub type ProgressFn = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// Called with the result of a call just before its waiter is woken.
+pub type ResultHook = Arc<dyn Fn(&Result<Value, Error>) + Send + Sync>;
+
 /// What a call waits for.
 pub(crate) type CallResult = Result<Value, Error>;
 
@@ -27,6 +30,7 @@ pub(crate) struct CallEntry {
     progress: Option<ProgressFn>,
     deadline: Option<watch::Sender<Instant>>,
     done: CancellationToken,
+    hook: Option<ResultHook>,
 }
 
 impl CallEntry {
@@ -41,10 +45,19 @@ impl CallEntry {
             progress,
             deadline,
             done,
+            hook: None,
         }
     }
 
+    pub(crate) fn with_hook(mut self, hook: Option<ResultHook>) -> Self {
+        self.hook = hook;
+        self
+    }
+
     fn finish(self, result: CallResult) {
+        if let Some(h) = &self.hook {
+            h(&result);
+        }
         self.done.cancel();
         // The receiver may be gone (a caller that stopped waiting): nothing to tell.
         let _ = self.tx.send(result);
