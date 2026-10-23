@@ -98,10 +98,7 @@ impl Context {
         if let Some(p) = self.peer.get() {
             return Ok(p.clone_ref(py));
         }
-        let p = Py::new(
-            py,
-            Peer::new(blocking::Peer::from(self.inner.peer().clone()), None),
-        )?;
+        let p = Peer::obj(py, blocking::Peer::from(self.inner.peer().clone()), None)?;
         Ok(self.peer.get_or_init(|| p).clone_ref(py))
     }
 
@@ -274,7 +271,7 @@ macro_rules! channel_class {
                             return;
                         };
                         let r = (|| -> PyResult<()> {
-                            let peer = Py::new(py, Peer::new(blocking::Peer::from(req.peer), None))?;
+                            let peer = Peer::obj(py, blocking::Peer::from(req.peer), None)?;
                             let obj = SubscribeRequest {
                                 peer,
                                 version: req.version,
@@ -399,12 +396,10 @@ channel_class!(
                                 version: view.version(),
                                 options: options_obj(py, view.options())
                                     .and_then(|o| mapping_proxy(py, o))?,
-                                connection: Py::new(
+                                connection: Peer::obj(
                                     py,
-                                    Peer::new(
-                                        blocking::Peer::from(view.connection().clone()),
-                                        None,
-                                    ),
+                                    blocking::Peer::from(view.connection().clone()),
+                                    None,
                                 )?,
                             };
                             cb.call1(py, (obj,))?.is_truthy(py)
@@ -497,7 +492,7 @@ fn peer_hook(
             let Some(cb) = slot_get(py, pick(&shared)) else {
                 return;
             };
-            let r = Py::new(py, Peer::new(p, None)).and_then(|peer| cb.call1(py, (peer,)));
+            let r = Peer::obj(py, p, None).and_then(|peer| cb.call1(py, (peer,)));
             if let Err(e) = r {
                 log_callback_error(py, "connection hook failed", e);
             }
@@ -694,7 +689,7 @@ impl Node {
             .node
             .peers()
             .into_iter()
-            .map(|p| Py::new(py, Peer::new(p, None)))
+            .map(|p| Peer::obj(py, p, None))
             .collect::<PyResult<Vec<_>>>()?;
         PyList::new(py, items)
     }

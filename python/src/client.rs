@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyWeakrefMethods, PyWeakrefReference};
 use stintmate_ipc::blocking;
 use stintmate_ipc::connection::CallOptions;
 use stintmate_ipc::{Delivery, Error, SubscribeOptions, Value};
@@ -356,14 +356,77 @@ impl PendingCall {
 
 // --------------------------------------------------------------------------- subscriptions
 
+/// A `threading.Event`-like view of a flag that the library owns: `is_set()` and
+/// `wait(timeout)` (the flag is read live; it cannot be set or cleared from Python).
+#[pyclass(module = "stintmate_ipc", frozen)]
+pub struct FlagEvent {
+    get: Box<dyn Fn() -> bool + Send + Sync>,
+}
+
+#[pymethods]
+impl FlagEvent {
+    /// Whether the flag is set.
+    fn is_set(&self) -> bool {
+        (self.get)()
+    }
+
+    fn __bool__(&self) -> bool {
+        (self.get)()
+    }
+
+    /// Waits until the flag is set (at most `timeout` seconds; `None`: as long as it takes);
+    /// returns whether it is set.
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        let end = timeout
+            .map(|t| secs("timeout", t))
+            .transpose()?
+            .map(|d| std::time::Instant::now() + d);
+        loop {
+            if (self.get)() {
+                return Ok(true);
+            }
+            if end.is_some_and(|e| std::time::Instant::now() >= e) {
+                return Ok(false);
+            }
+            py.detach(|| std::thread::sleep(Duration::from_millis(2)));
+            py.check_signals()?;
+        }
+    }
+}
+
 /// A subscription on one connection.
 #[pyclass(module = "stintmate_ipc")]
 pub struct Subscription {
     inner: stintmate_ipc::Subscription,
+    peer: Py<Peer>,
+    ended: OnceLock<Py<FlagEvent>>,
 }
 
 #[pymethods]
 impl Subscription {
+    /// The connection it is on.
+    #[getter]
+    fn peer(&self, py: Python<'_>) -> Py<Peer> {
+        self.peer.clone_ref(py)
+    }
+
+    /// Set once the subscription has ended (`is_set()`, `wait(timeout)`).
+    #[getter]
+    fn ended(&self, py: Python<'_>) -> PyResult<Py<FlagEvent>> {
+        if let Some(e) = self.ended.get() {
+            return Ok(e.clone_ref(py));
+        }
+        let inner = self.inner.clone();
+        let e = Py::new(
+            py,
+            FlagEvent {
+                get: Box::new(move || inner.is_ended()),
+            },
+        )?;
+        Ok(self.ended.get_or_init(|| e).clone_ref(py))
+    }
+
     /// The channel.
     #[getter]
     fn channel(&self) -> String {
@@ -379,9 +442,10 @@ impl Subscription {
 /// A subscription that a `Client` keeps across reconnects.
 #[pyclass(module = "stintmate_ipc", frozen)]
 pub struct ClientSubscription {
-    handle: stintmate_ipc::SubscriptionHandle,
+    handle: Arc<stintmate_ipc::SubscriptionHandle>,
     channel: String,
     closed: std::sync::atomic::AtomicBool,
+    subscribed: OnceLock<Py<FlagEvent>>,
 }
 
 #[pymethods]
@@ -402,8 +466,18 @@ impl ClientSubscription {
 
     /// Whether it is live on the current connection.
     #[getter]
-    fn subscribed(&self) -> bool {
-        self.handle.is_subscribed()
+    fn subscribed(&self, py: Python<'_>) -> PyResult<Py<FlagEvent>> {
+        if let Some(e) = self.subscribed.get() {
+            return Ok(e.clone_ref(py));
+        }
+        let h = self.handle.clone();
+        let e = Py::new(
+            py,
+            FlagEvent {
+                get: Box::new(move || h.is_subscribed()),
+            },
+        )?;
+        Ok(self.subscribed.get_or_init(|| e).clone_ref(py))
     }
 
     /// Unsubscribes and stops re-subscribing.
@@ -450,18 +524,48 @@ fn subscribe_options(
 // --------------------------------------------------------------------------- Peer
 
 /// One connection.
-#[pyclass(module = "stintmate_ipc")]
+#[pyclass(module = "stintmate_ipc", weakref)]
 pub struct Peer {
     inner: blocking::Peer,
     _owner: Option<blocking::Client>,
 }
 
+/// The live Python `Peer` objects by connection (weak), so that one connection is always the
+/// same Python object (`a is b`).
+static PEERS: Mutex<Vec<(usize, Py<PyWeakrefReference>)>> = Mutex::new(Vec::new());
+
 impl Peer {
-    pub(crate) fn new(inner: blocking::Peer, owner: Option<blocking::Client>) -> Self {
-        Self {
-            inner,
-            _owner: owner,
+    /// The one Python object of a connection; `owner` keeps the `Client` of `connect()` alive.
+    pub(crate) fn obj(
+        py: Python<'_>,
+        inner: blocking::Peer,
+        owner: Option<blocking::Client>,
+    ) -> PyResult<Py<Peer>> {
+        let key = std::ptr::from_ref(inner.inner().connection().info()) as usize;
+        let mut cache = lock(&PEERS);
+        if let Some((_, w)) = cache.iter().find(|(k, _)| *k == key)
+            && let Some(o) = w.bind(py).upgrade()
+            && let Ok(p) = o.cast_into::<Peer>()
+        {
+            if owner.is_some() {
+                let mut b = p.borrow_mut();
+                if b._owner.is_none() {
+                    b._owner = owner;
+                }
+            }
+            return Ok(p.unbind());
         }
+        cache.retain(|(k, w)| *k != key && w.bind(py).upgrade().is_some());
+        let obj = Py::new(
+            py,
+            Peer {
+                inner,
+                _owner: owner,
+            },
+        )?;
+        let weak = PyWeakrefReference::new(obj.bind(py))?;
+        cache.push((key, weak.unbind()));
+        Ok(obj)
     }
 }
 
@@ -599,12 +703,20 @@ impl Peer {
         let slot = Arc::new(OnceLock::new());
         let opts = subscribe_options(version, options, timeout, on_end, slot.clone())?;
         let peer = self.inner.clone();
+        let peer_obj = Peer::obj(py, peer.clone(), None)?;
         let ch = channel.to_owned();
         let cb = delivery_callback(callback);
         let sub = py
             .detach(move || peer.subscribe(&ch, opts, cb))
             .map_err(|e| to_pyerr(py, &e))?;
-        let obj = Py::new(py, Subscription { inner: sub })?;
+        let obj = Py::new(
+            py,
+            Subscription {
+                inner: sub,
+                peer: peer_obj,
+                ended: OnceLock::new(),
+            },
+        )?;
         let _ = slot.set(obj.clone_ref(py).into_any());
         Ok(obj)
     }
@@ -674,14 +786,25 @@ impl Client {
         })
     }
 
-    fn wait(&self, py: Python<'_>, wait: Duration) -> PyResult<Peer> {
+    fn wait(&self, py: Python<'_>, wait: Duration, raw: bool) -> PyResult<Py<Peer>> {
         let c = self.inner.clone();
         match py.detach(move || c.wait_connected(wait)) {
-            Ok(p) => Ok(Peer::new(p, None)),
+            Ok(p) => Peer::obj(py, p, None),
             Err(Error::NotConnected) => {
+                // As in 0.1.4: `NotConnected`, with the last connect error as its cause.
                 let spec = lock(&self.last_error).clone();
                 Err(match spec {
-                    Some(s) => s.to_pyerr(py),
+                    Some(s) if raw => s.to_pyerr(py),
+                    Some(s) => {
+                        let cause = s.to_pyerr(py);
+                        let err = make(
+                            py,
+                            "NotConnected",
+                            (format!("not connected: {}", cause.value(py)),),
+                        );
+                        err.set_cause(py, Some(cause));
+                        err
+                    }
                     None => make(py, "NotConnected", ("not connected",)),
                 })
             }
@@ -725,25 +848,28 @@ impl Client {
 
     /// Starts and waits for the first connection.
     #[pyo3(signature = (timeout=5.0))]
-    fn connect(&self, py: Python<'_>, timeout: f64) -> PyResult<Peer> {
+    fn connect(&self, py: Python<'_>, timeout: f64) -> PyResult<Py<Peer>> {
         self.inner.start();
-        self.wait(py, secs("timeout", timeout)?)
+        self.wait(py, secs("timeout", timeout)?, false)
     }
 
     /// Waits until connected (at most `timeout` seconds; `None`: as long as it takes).
     #[pyo3(signature = (timeout=None))]
-    fn wait_connected(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Peer> {
+    fn wait_connected(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<Peer>> {
         let wait = timeout
             .map(|t| secs("timeout", t))
             .transpose()?
             .unwrap_or(FOREVER);
-        self.wait(py, wait)
+        self.wait(py, wait, false)
     }
 
     /// The connection, when it is up.
     #[getter]
-    fn peer(&self) -> Option<Peer> {
-        self.inner.peer().map(|p| Peer::new(p, None))
+    fn peer(&self, py: Python<'_>) -> PyResult<Option<Py<Peer>>> {
+        self.inner
+            .peer()
+            .map(|p| Peer::obj(py, p, None))
+            .transpose()
     }
 
     /// Whether the connection is up.
@@ -839,9 +965,10 @@ impl Client {
         let obj = Py::new(
             py,
             ClientSubscription {
-                handle,
+                handle: Arc::new(handle),
                 channel: channel.to_owned(),
                 closed: false.into(),
+                subscribed: OnceLock::new(),
             },
         )?;
         let _ = slot.set(obj.clone_ref(py).into_any());
@@ -885,7 +1012,7 @@ pub fn connect(
     timeout: f64,
     node: Option<&Bound<'_, PyAny>>,
     event_queue: usize,
-) -> PyResult<Peer> {
+) -> PyResult<Py<Peer>> {
     if let Some(n) = node.filter(|n| !n.is_none()) {
         let Ok(c) = n.cast::<Client>() else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -894,12 +1021,15 @@ pub fn connect(
         };
         let c = c.borrow();
         c.inner.start();
-        return c.wait(py, secs("timeout", timeout)?);
+        return c.wait(py, secs("timeout", timeout)?, true);
     }
     let client = Client::build(py, pipe, info, key, false, event_queue)?;
     client.inner.start();
-    match client.wait(py, secs("timeout", timeout)?) {
-        Ok(p) => Ok(Peer::new(p.inner, Some(client.inner.clone()))),
+    match client.wait(py, secs("timeout", timeout)?, true) {
+        Ok(p) => {
+            let inner = p.borrow(py).inner.clone();
+            Peer::obj(py, inner, Some(client.inner.clone()))
+        }
         Err(e) => {
             let c = client.inner.clone();
             py.detach(move || c.close());

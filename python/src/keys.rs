@@ -356,12 +356,16 @@ fn scalar_from_py(ty: FieldType, v: &Bound<'_, PyAny>) -> PyResult<Scalar> {
 #[pyclass(module = "stintmate_ipc", frozen)]
 pub struct Layout {
     pub(crate) inner: RLayout,
+    st: std::sync::OnceLock<Py<PyAny>>,
 }
 
 impl Layout {
     /// Wraps a core layout.
     pub fn from_rust(inner: RLayout) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            st: std::sync::OnceLock::new(),
+        }
     }
 
     fn unpack_scalars(&self, body: &[u8]) -> PyResult<Vec<Scalar>> {
@@ -431,7 +435,35 @@ impl Layout {
         }
         let inner = RLayout::new(parsed, name.as_deref())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self::from_rust(inner))
+    }
+
+    /// The `struct.Struct` of a body (little-endian, no padding), as in 0.1.4.
+    #[getter]
+    fn r#struct(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(s) = self.st.get() {
+            return Ok(s.clone_ref(py));
+        }
+        let mut fmt = String::from("<");
+        for f in self.inner.fields() {
+            if f.count > 1 {
+                fmt.push_str(&f.count.to_string());
+            }
+            fmt.push(match f.ty.name() {
+                "u8" => 'B',
+                "i8" => 'b',
+                "u16" => 'H',
+                "i16" => 'h',
+                "u32" => 'I',
+                "i32" => 'i',
+                "u64" => 'Q',
+                "i64" => 'q',
+                "f32" => 'f',
+                _ => 'd',
+            });
+        }
+        let s = py.import("struct")?.getattr("Struct")?.call1((fmt,))?;
+        Ok(self.st.get_or_init(|| s.unbind()).clone_ref(py))
     }
 
     /// The layout's name.
@@ -544,7 +576,7 @@ impl Layout {
     fn from_wire(d: &Bound<'_, PyAny>) -> PyResult<Self> {
         let inner =
             RLayout::from_value(&to_value(d)?).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self::from_rust(inner))
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {

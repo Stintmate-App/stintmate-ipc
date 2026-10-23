@@ -90,6 +90,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PendingCall>()?;
     m.add_class::<client::Subscription>()?;
     m.add_class::<client::ClientSubscription>()?;
+    m.add_class::<client::FlagEvent>()?;
     m.add_class::<client::Event>()?;
     m.add_class::<client::Sample>()?;
     m.add_function(wrap_pyfunction!(client::connect, m)?)?;
