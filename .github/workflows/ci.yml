@@ -2,8 +2,16 @@ name: ci
 
 # Minutes are limited (free organisation, Windows counts double): CI runs by hand only
 # (Actions > ci > Run workflow); every check runs locally before each merge (README, "Building").
+# It runs on the organisation's own Windows runner `stintmate-win` (no GitHub minutes; private
+# repositories and workflow_dispatch only); `windows-latest` is the fallback when it is down.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Where to run
+        type: choice
+        options: [stintmate-win, windows-latest]
+        default: stintmate-win
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,8 +21,13 @@ permissions:
   contents: read
 
 jobs:
-  rust:
-    runs-on: windows-latest
+  # One job: every job pays the runner's start, and the runner takes one job at a time.
+  ci:
+    runs-on: ${{ inputs.runner == 'windows-latest' && 'windows-latest' || fromJSON('["self-hosted", "stintmate-win"]') }}
+    timeout-minutes: 90
+    env:
+      # The C and C# examples (stintmate-ipc-ffi tests) fail instead of skipping without MSVC/csc.
+      STINTMATE_REQUIRE_EXAMPLES: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain (from rust-toolchain.toml)
@@ -24,26 +37,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The C ABI DLL the examples link against (cargo test does not build cdylibs).
+      - run: cargo build --workspace
       - run: cargo test --workspace
-
-  deny:
-    # cargo-deny-action is a Docker action: Linux runners only. The graph is Windows' (deny.toml).
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # cargo-deny: installed on stintmate-win; GitHub's runner installs it here.
+      - if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@v2
         with:
-          command: check licenses advisories bans sources
-
-  python:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Toolchain (from rust-toolchain.toml)
-        run: |
-          rustup toolchain install
-          rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
+          tool: cargo-deny
+      - run: cargo deny check licenses advisories bans sources
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"

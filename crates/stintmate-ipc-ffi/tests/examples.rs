@@ -65,6 +65,10 @@ impl Drop for Echo {
 }
 
 fn skip(reason: &str) {
+    // CI sets STINTMATE_REQUIRE_EXAMPLES: a runner without the toolchain fails instead.
+    if std::env::var_os("STINTMATE_REQUIRE_EXAMPLES").is_some_and(|v| !v.is_empty()) {
+        panic!("example required but not built: {reason}");
+    }
     eprintln!("SKIPPED: {reason}");
 }
 
