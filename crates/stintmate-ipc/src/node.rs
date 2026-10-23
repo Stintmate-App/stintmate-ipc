@@ -1257,6 +1257,7 @@ impl PeerState {
             callback: callback.clone(),
             on_end,
             ended: AtomicBool::new(false),
+            end_tx: tokio::sync::watch::channel(false).0,
             end_info: Mutex::new(None),
             pending: Mutex::new(VecDeque::new()),
             limit,
@@ -1324,6 +1325,7 @@ impl PeerState {
             return;
         }
         *lock(&sub.end_info) = Some((code.to_owned(), message.to_owned()));
+        sub.end_tx.send_replace(true);
         if let Some(f) = sub.on_end.clone() {
             let (ch, c, m) = (sub.channel.clone(), code.to_owned(), message.to_owned());
             self.submit_unclosed(Box::new(move || f(&ch, &c, &m)));
@@ -1686,6 +1688,8 @@ pub(crate) struct InSub {
     callback: DeliveryFn,
     on_end: Option<EndFn>,
     ended: AtomicBool,
+    /// Turns true once the subscription has ended (wakes [`Subscription::wait_ended`]).
+    end_tx: tokio::sync::watch::Sender<bool>,
     end_info: Mutex<Option<(String, String)>>,
     pending: Mutex<VecDeque<Delivery>>,
     limit: usize,
@@ -1765,6 +1769,11 @@ impl Subscription {
     /// A state channel's latest value seen.
     pub fn snapshot(&self) -> Option<Value> {
         lock(&self.0.snapshot).clone()
+    }
+    /// Completes when the subscription has ended (at once if it already has).
+    pub async fn wait_ended(&self) {
+        let mut rx = self.0.end_tx.subscribe();
+        let _ = rx.wait_for(|e| *e).await;
     }
     /// Whether it has ended.
     pub fn is_ended(&self) -> bool {

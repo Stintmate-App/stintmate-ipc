@@ -50,6 +50,11 @@ pub fn reconnect_delay(code: Option<&str>, attempt: u32) -> Option<Duration> {
     }
 }
 
+/// Chooses the delay before the next attempt from the `bye` code and the failures in a row
+/// (see [`reconnect_delay`]); `None` stops reconnecting. It may block: it runs on a blocking
+/// thread of the runtime. A panic falls back to [`reconnect_delay`].
+pub type ReconnectPolicy = Arc<dyn Fn(Option<&str>, u32) -> Option<Duration> + Send + Sync>;
+
 /// `d` with +-20 % jitter.
 fn jitter(d: Duration) -> Duration {
     let mut b = [0u8; 4];
@@ -68,6 +73,7 @@ pub struct ClientBuilder {
     key: KeySource,
     cfg: NodeConfig,
     reconnect: bool,
+    policy: Option<ReconnectPolicy>,
     handle: Option<Handle>,
     lanes: Option<LaneFactory>,
 }
@@ -76,6 +82,11 @@ impl ClientBuilder {
     /// Whether to reconnect (default true).
     pub fn reconnect(mut self, on: bool) -> Self {
         self.reconnect = on;
+        self
+    }
+    /// Replaces the built-in [`reconnect_delay`] policy.
+    pub fn reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.policy = Some(policy);
         self
     }
     /// The bounds of an event subscription's local queue.
@@ -115,6 +126,7 @@ impl ClientBuilder {
                 path,
                 short: naming::ascii_lower(&short),
                 reconnect: self.reconnect,
+                policy: self.policy,
                 peer: Mutex::new(None),
                 up,
                 stop: CancellationToken::new(),
@@ -133,6 +145,8 @@ struct ClientSub {
     callback: DeliveryFn,
     current: Mutex<Option<(Peer, Subscription)>>,
     error: Mutex<Option<String>>,
+    /// Counts the times `current` was set (wakes [`SubscriptionHandle::wait_subscribed`]).
+    set_tx: watch::Sender<u64>,
     closed: AtomicBool,
     gate: tokio::sync::Mutex<()>,
 }
@@ -141,6 +155,7 @@ struct Inner {
     path: String,
     short: String,
     reconnect: bool,
+    policy: Option<ReconnectPolicy>,
     peer: Mutex<Option<Peer>>,
     up: watch::Sender<bool>,
     stop: CancellationToken,
@@ -148,6 +163,21 @@ struct Inner {
     subs: Mutex<Vec<Arc<ClientSub>>>,
     last_error: Mutex<Option<String>>,
     on_error: Mutex<Option<ConnectErrorHook>>,
+}
+
+impl Inner {
+    /// The delay before the next attempt: the custom policy (on a blocking thread) or the
+    /// built-in one.
+    async fn delay(&self, code: Option<String>, attempt: u32) -> Option<Duration> {
+        let Some(policy) = self.policy.clone() else {
+            return reconnect_delay(code.as_deref(), attempt);
+        };
+        let c = code.clone();
+        match tokio::task::spawn_blocking(move || policy(c.as_deref(), attempt)).await {
+            Ok(d) => d,
+            Err(_) => reconnect_delay(code.as_deref(), attempt),
+        }
+    }
 }
 
 /// A client of one endpoint that keeps its connection. Cheap to clone.
@@ -181,6 +211,15 @@ impl SubscriptionHandle {
         lock(&self.cs.current)
             .as_ref()
             .is_some_and(|(_, s)| !s.is_ended())
+    }
+    /// Completes when the subscription is live on a connection (at once if it already is).
+    pub async fn wait_subscribed(&self) {
+        let mut rx = self.cs.set_tx.subscribe();
+        while !self.is_subscribed() {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
     }
     /// The current subscription on the connection, if any.
     pub fn current(&self) -> Option<Subscription> {
@@ -218,6 +257,7 @@ impl Client {
             key,
             cfg: NodeConfig::default(),
             reconnect: true,
+            policy: None,
             handle: None,
             lanes: None,
         }
@@ -337,6 +377,7 @@ impl Client {
             callback: Arc::new(callback),
             current: Mutex::new(None),
             error: Mutex::new(None),
+            set_tx: watch::channel(0).0,
             closed: AtomicBool::new(false),
             gate: tokio::sync::Mutex::new(()),
         });
@@ -420,6 +461,7 @@ async fn resubscribe_now(inner: &Arc<Inner>, cs: &Arc<ClientSub>) {
         Ok(sub) => {
             *lock(&cs.current) = Some((peer, sub));
             *lock(&cs.error) = None;
+            cs.set_tx.send_modify(|n| *n += 1);
         }
         Err(e) => {
             info!("subscribe {} failed: {e}", cs.channel);
@@ -472,7 +514,7 @@ async fn run(node: Node, inner: Arc<Inner>) {
                 if !inner.reconnect {
                     return;
                 }
-                let d = reconnect_delay(error_code(&e).as_deref(), attempt);
+                let d = inner.delay(error_code(&e), attempt).await;
                 attempt += 1;
                 match d {
                     Some(d) => d,
@@ -506,7 +548,7 @@ async fn run(node: Node, inner: Arc<Inner>) {
                     return;
                 }
                 let code = (closed.by == crate::connection::ClosedBy::Peer).then_some(closed.code);
-                match reconnect_delay(code.as_deref(), 0) {
+                match inner.delay(code, 0).await {
                     Some(d) => d,
                     None => {
                         error!("{}: reconnecting stopped (bye)", inner.short);

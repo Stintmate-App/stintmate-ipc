@@ -361,7 +361,13 @@ impl PendingCall {
 #[pyclass(module = "stintmate_ipc", frozen)]
 pub struct FlagEvent {
     get: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Blocks until the flag is set or the time given passes (`None`: as long as it takes);
+    /// returns whether it is set. Woken by the library, it does not poll.
+    wait: Box<dyn Fn(Option<Duration>) -> bool + Send + Sync>,
 }
+
+/// Longest sleep of a `FlagEvent.wait` before it looks at the signals (Ctrl+C).
+const SIGNAL_SLICE: Duration = Duration::from_millis(500);
 
 #[pymethods]
 impl FlagEvent {
@@ -383,13 +389,14 @@ impl FlagEvent {
             .transpose()?
             .map(|d| std::time::Instant::now() + d);
         loop {
-            if (self.get)() {
+            let left = end.map(|e| e.saturating_duration_since(std::time::Instant::now()));
+            let slice = left.map_or(SIGNAL_SLICE, |l| l.min(SIGNAL_SLICE));
+            if py.detach(|| (self.wait)(Some(slice))) {
                 return Ok(true);
             }
-            if end.is_some_and(|e| std::time::Instant::now() >= e) {
-                return Ok(false);
+            if left.is_some_and(|l| l <= SIGNAL_SLICE) {
+                return Ok((self.get)());
             }
-            py.detach(|| std::thread::sleep(Duration::from_millis(2)));
             py.check_signals()?;
         }
     }
@@ -421,7 +428,11 @@ impl Subscription {
         let e = Py::new(
             py,
             FlagEvent {
-                get: Box::new(move || inner.is_ended()),
+                get: Box::new({
+                    let i = inner.clone();
+                    move || i.is_ended()
+                }),
+                wait: Box::new(move |d| blocking::wait_for(inner.wait_ended(), d)),
             },
         )?;
         Ok(self.ended.get_or_init(|| e).clone_ref(py))
@@ -431,6 +442,12 @@ impl Subscription {
     #[getter]
     fn channel(&self) -> String {
         self.inner.channel().to_owned()
+    }
+
+    /// The stream's `Layout` (`None` for an event or state channel).
+    #[getter]
+    fn layout(&self) -> Option<Layout> {
+        self.inner.layout().map(|l| Layout::from_rust(l.clone()))
     }
 
     /// Unsubscribes.
@@ -456,6 +473,13 @@ impl ClientSubscription {
         self.channel.clone()
     }
 
+    /// The stream's `Layout` once it is live (`None` for other channels, or until then).
+    #[getter]
+    fn layout(&self) -> Option<Layout> {
+        let sub = self.handle.current()?;
+        sub.layout().map(|l| Layout::from_rust(l.clone()))
+    }
+
     /// The error of the last attempt to subscribe, or `None`.
     #[getter]
     fn error(&self, py: Python<'_>) -> Option<PyErr> {
@@ -474,7 +498,11 @@ impl ClientSubscription {
         let e = Py::new(
             py,
             FlagEvent {
-                get: Box::new(move || h.is_subscribed()),
+                get: Box::new({
+                    let h = h.clone();
+                    move || h.is_subscribed()
+                }),
+                wait: Box::new(move |d| blocking::wait_for(h.wait_subscribed(), d)),
             },
         )?;
         Ok(self.subscribed.get_or_init(|| e).clone_ref(py))
@@ -528,6 +556,7 @@ fn subscribe_options(
 pub struct Peer {
     inner: blocking::Peer,
     _owner: Option<blocking::Client>,
+    closed: OnceLock<Py<FlagEvent>>,
 }
 
 /// The live Python `Peer` objects by connection (weak), so that one connection is always the
@@ -561,6 +590,7 @@ impl Peer {
             Peer {
                 inner,
                 _owner: owner,
+                closed: OnceLock::new(),
             },
         )?;
         let weak = PyWeakrefReference::new(obj.bind(py))?;
@@ -599,6 +629,26 @@ impl Peer {
     #[getter]
     fn is_open(&self) -> bool {
         self.inner.is_open()
+    }
+
+    /// Set once the connection is closing or closed (`is_set()`, `wait(timeout)`).
+    #[getter]
+    fn closed(&self, py: Python<'_>) -> PyResult<Py<FlagEvent>> {
+        if let Some(e) = self.closed.get() {
+            return Ok(e.clone_ref(py));
+        }
+        let conn = self.inner.inner().connection().clone();
+        let e = Py::new(
+            py,
+            FlagEvent {
+                get: Box::new({
+                    let c = conn.clone();
+                    move || c.is_closed()
+                }),
+                wait: Box::new(move |d| blocking::wait_for(conn.wait_closing(), d)),
+            },
+        )?;
+        Ok(self.closed.get_or_init(|| e).clone_ref(py))
     }
 
     /// The `bye` code the connection ended with, once it has ended.
@@ -732,10 +782,51 @@ impl Peer {
 
 // --------------------------------------------------------------------------- Client
 
+/// Asks the client object's (overridden) `reconnect_delay` for the next delay; on a failure
+/// or when the object is gone, the built-in policy decides.
+fn policy_call(
+    me: &OnceLock<Py<PyWeakrefReference>>,
+    code: Option<&str>,
+    attempt: u32,
+) -> Option<Duration> {
+    let builtin = || stintmate_ipc::client::reconnect_delay(code, attempt);
+    if me.get().is_none() {
+        return builtin();
+    }
+    Python::attach(|py| {
+        let Some(obj) = me.get().and_then(|w| w.bind(py).upgrade()) else {
+            return builtin();
+        };
+        let r = obj
+            .call_method1("reconnect_delay", (code, attempt))
+            .and_then(|v| {
+                if v.is_none() {
+                    Ok(None)
+                } else {
+                    v.extract::<f64>().and_then(|s| {
+                        Duration::try_from_secs_f64(s.max(0.0))
+                            .map(Some)
+                            .map_err(|_| PyValueError::new_err("reconnect_delay: bad seconds"))
+                    })
+                }
+            });
+        match r {
+            Ok(d) => d,
+            Err(e) => {
+                log_callback_error(py, "reconnect_delay failed", e);
+                builtin()
+            }
+        }
+    })
+}
+
 /// A client that stays connected: connects in the background, retries with backoff and
 /// re-subscribes after every reconnect.
-#[pyclass(extends = crate::endpoint::Node, module = "stintmate_ipc", subclass)]
+#[pyclass(extends = crate::endpoint::Node, module = "stintmate_ipc", subclass, weakref)]
 pub struct Client {
+    /// Where the object is found by the reconnect loop when a subclass overrides
+    /// `reconnect_delay` (a weak reference, set when the client starts).
+    me: Arc<OnceLock<Py<PyWeakrefReference>>>,
     inner: blocking::Client,
     last_error: Arc<Mutex<Option<ErrSpec>>>,
     on_connect_error: Arc<Mutex<Option<Py<PyAny>>>>,
@@ -754,8 +845,13 @@ impl Client {
     ) -> PyResult<Self> {
         let info = info.borrow().to_rust(py)?;
         let key = key_source(key)?;
+        let me: Arc<OnceLock<Py<PyWeakrefReference>>> = Arc::default();
         let inner = blocking::Client::with(pipe, info, key, |b| {
-            b.reconnect(reconnect).event_queue(event_queue.max(1))
+            let b = b.reconnect(reconnect).event_queue(event_queue.max(1));
+            let me = me.clone();
+            b.reconnect_policy(Arc::new(move |code, attempt| {
+                policy_call(&me, code, attempt)
+            }))
         })
         .map_err(|e| to_pyerr(py, &e))?;
         let last_error: Arc<Mutex<Option<ErrSpec>>> = Arc::default();
@@ -779,11 +875,28 @@ impl Client {
             });
         }
         Ok(Self {
+            me,
             inner,
             last_error,
             on_connect_error: user_cb,
             subs: Mutex::default(),
         })
+    }
+
+    /// Lets the reconnect loop find this object (only when a subclass overrides
+    /// `reconnect_delay`).
+    fn arm(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let me = slf.borrow().me.clone();
+        if me.get().is_none() {
+            // A subclass that overrides `reconnect_delay` decides the delays (as in 0.1.4).
+            let py = slf.py();
+            let base = py.get_type::<Self>().getattr("reconnect_delay")?;
+            if !slf.get_type().getattr("reconnect_delay")?.is(&base) {
+                let w = PyWeakrefReference::new(slf.as_any())?;
+                let _ = me.set(w.unbind());
+            }
+        }
+        Ok(())
     }
 
     fn wait(&self, py: Python<'_>, wait: Duration, raw: bool) -> PyResult<Py<Peer>> {
@@ -841,16 +954,19 @@ impl Client {
     }
 
     /// Connects in the background (once); returns the client.
-    fn start(slf: Py<Self>, py: Python<'_>) -> Py<Self> {
+    fn start(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        Self::arm(slf.bind(py))?;
         slf.borrow(py).inner.start();
-        slf
+        Ok(slf)
     }
 
     /// Starts and waits for the first connection.
     #[pyo3(signature = (timeout=5.0))]
-    fn connect(&self, py: Python<'_>, timeout: f64) -> PyResult<Py<Peer>> {
-        self.inner.start();
-        self.wait(py, secs("timeout", timeout)?, false)
+    fn connect(slf: &Bound<'_, Self>, py: Python<'_>, timeout: f64) -> PyResult<Py<Peer>> {
+        Self::arm(slf)?;
+        let this = slf.borrow();
+        this.inner.start();
+        this.wait(py, secs("timeout", timeout)?, false)
     }
 
     /// Waits until connected (at most `timeout` seconds; `None`: as long as it takes).

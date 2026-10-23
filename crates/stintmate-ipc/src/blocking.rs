@@ -43,6 +43,20 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Blocks the calling thread until `fut` completes or `limit` passes (`None`: as long as it
+/// takes); returns whether it completed. No polling: the thread sleeps until woken.
+pub fn wait_for(fut: impl std::future::Future<Output = ()>, limit: Option<Duration>) -> bool {
+    runtime().block_on(async {
+        match limit {
+            Some(d) => tokio::time::timeout(d, fut).await.is_ok(),
+            None => {
+                fut.await;
+                true
+            }
+        }
+    })
+}
+
 /// The process-wide runtime, created on first use: one I/O worker (handlers and callbacks
 /// run on their own threads, so the runtime only moves bytes; a second worker only added
 /// work-stealing wake-ups, PRY-085 T7c).
