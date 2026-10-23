@@ -109,6 +109,8 @@ async fn state_coalesces_events_overload_and_streams_drop_the_oldest_at_the_owne
     let ep = Endpoint::builder(stintmate_ipc::handshake::PeerInfo::new("server"), ks(k))
         .pipe(&pipe)
         .event_queue(5, 1 << 20)
+        // The owner's queues are what this tests: no direct writes that empty them at once.
+        .direct_writes(false)
         .build()
         .unwrap();
     ep.start().await.unwrap();

@@ -2,6 +2,13 @@
 //! writer queue, the heartbeat, `bye`, and the table of calls with one completion path
 //! ([`crate::calls`]).
 //!
+//! Sending: when nothing is queued or being written, the sending thread writes its frames to
+//! the transport itself (a non-blocking write: no hop to the writer task, no wake-up). When
+//! the transport cannot take all of it, or something is already queued, the rest goes through
+//! the bounded queue to the writer task, which writes everything queued per wake-up as one
+//! write. A counter of queued items, raised under the write lock, keeps one total order per
+//! connection (SPEC 13.1): a sender writes directly only while that counter is zero.
+//!
 //! Everything here is generic over the byte stream, so the same code runs over a named pipe
 //! ([`connect`], [`accept`]) and over an in-memory duplex in unit tests. A [`Connection`] is a
 //! cheap handle; its tasks keep running until [`Connection::close`] (or the peer, or an error)
@@ -14,12 +21,12 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
@@ -367,6 +374,13 @@ struct Inner {
     calls: CallTable,
     next_id: AtomicU64,
     out: mpsc::Sender<Out>,
+    /// The write half of the transport, shared by direct writers and the writer task; only
+    /// ever held for one non-blocking poll. Dropped when the writer task ends (the pipe
+    /// closes with it).
+    wr: Mutex<Option<BoxWrite>>,
+    /// Items in the writer queue or being written by the writer task (raised under `wr`): a
+    /// direct write is allowed only while it is zero.
+    queued: AtomicUsize,
     /// Stops the reader, writer and heartbeat; always after `reason` is set.
     abort: CancellationToken,
     /// Set as soon as a close reason is: nothing is sent after it, calls are failed.
@@ -383,6 +397,16 @@ struct Inner {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
+
+/// What a direct write did.
+enum Direct {
+    /// Everything is on the transport (or what was left is queued, in order).
+    Done,
+    /// The writer is busy: nothing was written; the caller queues it.
+    Busy,
 }
 
 /// An established connection; clone it freely.
@@ -470,30 +494,155 @@ impl Inner {
         Ok(out)
     }
 
-    async fn send_frames(&self, frames: Vec<u8>) -> Result<(), Error> {
+    /// With the write lock held: writes `frames` directly when nothing is queued, handing
+    /// what the transport does not take now to the writer task (there is room: the queue is
+    /// empty). Never blocks.
+    fn write_direct(&self, w: &mut BoxWrite, frames: &[u8]) -> Result<Direct, Error> {
         if self.closing.is_cancelled() {
             return Err(self.lost());
         }
-        tokio::select! {
-            r = self.out.send(Out::Frames(frames)) => r.map_err(|_| self.lost()),
-            () = self.closing.cancelled() => Err(self.lost()),
+        if self.queued.load(Ordering::Acquire) != 0 {
+            return Ok(Direct::Busy);
+        }
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut off = 0;
+        while off < frames.len() {
+            match Pin::new(&mut *w).poll_write(&mut cx, &frames[off..]) {
+                Poll::Ready(Ok(n)) if n > 0 => off += n,
+                Poll::Ready(Ok(_)) => return Err(self.write_failed("wrote zero bytes")),
+                Poll::Ready(Err(e)) => return Err(self.write_failed(&e.to_string())),
+                Poll::Pending => break,
+            }
+        }
+        let rest = if off < frames.len() {
+            frames[off..].to_vec()
+        } else {
+            match Pin::new(&mut *w).poll_flush(&mut cx) {
+                Poll::Ready(Ok(())) => {
+                    self.last_sent.store(self.now_ms(), Ordering::Relaxed);
+                    return Ok(Direct::Done);
+                }
+                Poll::Ready(Err(e)) => return Err(self.write_failed(&e.to_string())),
+                // An empty item: the writer task finishes the flush.
+                Poll::Pending => Vec::new(),
+            }
+        };
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        if self.out.try_send(Out::Frames(rest)).is_err() {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+            return Err(self.lost());
+        }
+        Ok(Direct::Done)
+    }
+
+    fn write_failed(&self, what: &str) -> Error {
+        self.abort_with(
+            ClosedBy::Transport,
+            "transport",
+            format!("write failed: {what}"),
+        );
+        self.lost()
+    }
+
+    /// Writes directly, or reserves a place in the queue (then the caller enqueues, or
+    /// releases the place when that fails). True when the frames are already written.
+    fn direct_or_reserve(&self, frames: &[u8]) -> Result<bool, Error> {
+        let mut g = lock(&self.wr);
+        let Some(w) = g.as_mut() else {
+            return Err(self.lost());
+        };
+        match self.write_direct(w, frames)? {
+            Direct::Done => Ok(true),
+            Direct::Busy => {
+                self.queued.fetch_add(1, Ordering::AcqRel);
+                Ok(false)
+            }
         }
     }
 
-    fn try_send_frames(&self, frames: Vec<u8>) -> Result<(), Error> {
-        if self.closing.is_cancelled() {
-            return Err(self.lost());
+    async fn send_frames(&self, frames: Vec<u8>) -> Result<(), Error> {
+        if self.direct_or_reserve(&frames)? {
+            return Ok(());
         }
-        self.out
-            .try_send(Out::Frames(frames))
-            .map_err(|_| Error::ConnectionLost {
+        let r = tokio::select! {
+            r = self.out.send(Out::Frames(frames)) => r.map_err(|_| self.lost()),
+            () = self.closing.cancelled() => Err(self.lost()),
+        };
+        if r.is_err() {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+        }
+        r
+    }
+
+    fn try_send_frames(&self, frames: Vec<u8>) -> Result<(), Error> {
+        if self.direct_or_reserve(&frames)? {
+            return Ok(());
+        }
+        self.out.try_send(Out::Frames(frames)).map_err(|_| {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+            Error::ConnectionLost {
                 code: None,
                 message: "the writer queue is full".into(),
-            })
+            }
+        })
+    }
+
+    /// Runs `f` with direct writes while nothing is queued (under the write lock). `None`
+    /// when the writer is busy or the connection is closing.
+    fn with_direct<R>(&self, f: impl FnOnce(&mut DirectWriter<'_>) -> R) -> Option<R> {
+        let mut g = lock(&self.wr);
+        let w = g.as_mut()?;
+        if self.closing.is_cancelled() || self.queued.load(Ordering::Acquire) != 0 {
+            return None;
+        }
+        Some(f(&mut DirectWriter { inner: self, w }))
+    }
+
+    /// The writer task's writes: everything in `buf`, then a flush, holding the write lock
+    /// for one poll at a time.
+    async fn write_shared(&self, buf: &[u8]) -> std::io::Result<()> {
+        let mut off = 0;
+        std::future::poll_fn(|cx| {
+            let mut g = lock(&self.wr);
+            let Some(w) = g.as_mut() else {
+                return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+            };
+            while off < buf.len() {
+                match Pin::new(&mut *w).poll_write(cx, &buf[off..]) {
+                    Poll::Ready(Ok(0)) => {
+                        return Poll::Ready(Err(std::io::ErrorKind::WriteZero.into()));
+                    }
+                    Poll::Ready(Ok(n)) => off += n,
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            Pin::new(&mut *w).poll_flush(cx)
+        })
+        .await
     }
 
     async fn send_message(&self, message: &Value) -> Result<(), Error> {
         self.send_frames(self.frames_for(message)?).await
+    }
+
+    fn stream_frame(
+        &self,
+        sid: u32,
+        seq: u32,
+        t_ns: i64,
+        flags: u32,
+        body: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let mut f = Vec::with_capacity(body.len() + 24);
+        wire::write_stream_frame(&mut f, sid, seq, t_ns, flags, body)?;
+        if f.len() - 4 > self.info.peer_limits.max_frame as usize {
+            return Err(Error::TooLarge {
+                size: f.len() - 4,
+                max: self.info.peer_limits.max_frame,
+            });
+        }
+        Ok(f)
     }
 
     fn try_send_message(&self, message: &Value) -> Result<(), Error> {
@@ -511,9 +660,11 @@ impl Inner {
         if !began {
             return;
         }
-        let sent = to_frame(&bye_message(code, message))
-            .ok()
-            .is_some_and(|f| self.out.try_send(Out::Bye(f)).is_ok());
+        let sent = to_frame(&bye_message(code, message)).ok().is_some_and(|f| {
+            let _w = lock(&self.wr);
+            self.queued.fetch_add(1, Ordering::AcqRel);
+            self.out.try_send(Out::Bye(f)).is_ok()
+        });
         if !sent {
             self.abort.cancel();
             return;
@@ -562,6 +713,39 @@ impl Inner {
     }
 }
 
+/// Direct writes from the sending thread, under the connection's write lock
+/// ([`Connection::write_direct_with`]).
+pub(crate) struct DirectWriter<'a> {
+    inner: &'a Inner,
+    w: &'a mut BoxWrite,
+}
+
+impl DirectWriter<'_> {
+    /// Writes one message's (or sample's) frames. False when they did not all go out
+    /// directly (the rest is queued, in order, or the connection failed): stop writing here.
+    pub(crate) fn write(&mut self, frames: &[u8]) -> bool {
+        matches!(self.inner.write_direct(self.w, frames), Ok(Direct::Done))
+            && self.inner.queued.load(Ordering::Acquire) == 0
+    }
+
+    /// The frames of a message that is already encoded.
+    pub(crate) fn frames_for_encoded(&self, encoded: &[u8]) -> Result<Vec<u8>, Error> {
+        self.inner.frames_for_encoded(encoded)
+    }
+
+    /// The frame of a stream sample.
+    pub(crate) fn stream_frame(
+        &self,
+        sid: u32,
+        seq: u32,
+        t_ns: i64,
+        flags: u32,
+        body: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.inner.stream_frame(sid, seq, t_ns, flags, body)
+    }
+}
+
 impl Connection {
     /// Starts the tasks of a connection whose handshake is done.
     fn start<IO>(
@@ -576,6 +760,7 @@ impl Connection {
     {
         let (rd, wr) = tokio::io::split(io);
         let (tx, rx) = mpsc::channel(opts.queue_capacity.max(1));
+        let wr: BoxWrite = Box::new(wr);
         let inner = Arc::new(Inner {
             info,
             handler,
@@ -583,6 +768,8 @@ impl Connection {
             calls: CallTable::default(),
             next_id: AtomicU64::new(1),
             out: tx,
+            wr: Mutex::new(Some(wr)),
+            queued: AtomicUsize::new(0),
             abort: CancellationToken::new(),
             closing: CancellationToken::new(),
             reason: Mutex::new(None),
@@ -595,7 +782,7 @@ impl Connection {
             last_recv: AtomicU64::new(0),
         });
         inner.tracker.spawn(reader_task(inner.clone(), rd, reader));
-        inner.tracker.spawn(writer_task(inner.clone(), wr, rx));
+        inner.tracker.spawn(writer_task(inner.clone(), rx));
         inner.tracker.spawn(heartbeat_task(inner.clone()));
         Connection(inner)
     }
@@ -670,15 +857,17 @@ impl Connection {
         flags: u32,
         body: &[u8],
     ) -> Result<(), Error> {
-        let mut f = Vec::new();
-        wire::write_stream_frame(&mut f, sid, seq, t_ns, flags, body)?;
-        if f.len() - 4 > self.0.info.peer_limits.max_frame as usize {
-            return Err(Error::TooLarge {
-                size: f.len() - 4,
-                max: self.0.info.peer_limits.max_frame,
-            });
-        }
+        let f = self.0.stream_frame(sid, seq, t_ns, flags, body)?;
         self.0.send_frames(f).await
+    }
+
+    /// Writes from this thread while the writer is idle (see the module docs); `None` when it
+    /// is busy or the connection is closing. The node's pump uses it to skip its own task.
+    pub(crate) fn write_direct_with<R>(
+        &self,
+        f: impl FnOnce(&mut DirectWriter<'_>) -> R,
+    ) -> Option<R> {
+        self.0.with_direct(f)
     }
 
     /// Calls `method` with `params` and waits for the result.
@@ -863,59 +1052,81 @@ async fn reader_task<IO: AsyncRead + Send + 'static>(
     }
 }
 
-async fn writer_task<IO: AsyncWrite + Send + 'static>(
-    inner: Arc<Inner>,
-    mut wr: WriteHalf<IO>,
-    mut rx: mpsc::Receiver<Out>,
-) {
+/// Writes what the direct path could not: everything queued per wake-up, as one write.
+async fn writer_task(inner: Arc<Inner>, mut rx: mpsc::Receiver<Out>) {
+    const BATCH: usize = 64 * 1024;
+    /// Drops the write half when the task ends, however it ends.
+    struct Release<'a>(&'a Inner);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            lock(&self.0.wr).take();
+        }
+    }
+    let _release = Release(&inner);
+    let mut buf = Vec::new();
     loop {
         let item = tokio::select! {
             biased;
             () = inner.abort.cancelled() => return,
             i = rx.recv() => i,
         };
+        let mut bye = None;
+        let mut n = 0;
+        buf.clear();
         match item {
             None => return,
             Some(Out::Frames(b)) => {
-                let r = timeout(inner.opts.write_timeout, async {
-                    wr.write_all(&b).await?;
-                    wr.flush().await
-                })
-                .await;
-                match r {
-                    Ok(Ok(())) => inner.last_sent.store(inner.now_ms(), Ordering::Relaxed),
-                    Ok(Err(e)) => {
-                        inner.abort_with(
-                            ClosedBy::Transport,
-                            "transport",
-                            format!("write failed: {e}"),
-                        );
-                        return;
-                    }
-                    Err(_) => {
-                        inner.abort_with(
-                            ClosedBy::Transport,
-                            "overloaded",
-                            format!(
-                                "no write progress for {} s",
-                                inner.opts.write_timeout.as_secs_f32()
-                            ),
-                        );
-                        return;
+                buf.extend_from_slice(&b);
+                n += 1;
+                while buf.len() < BATCH {
+                    match rx.try_recv() {
+                        Ok(Out::Frames(b)) => {
+                            buf.extend_from_slice(&b);
+                            n += 1;
+                        }
+                        Ok(Out::Bye(b)) => {
+                            bye = Some(b);
+                            break;
+                        }
+                        Err(_) => break,
                     }
                 }
             }
-            Some(Out::Bye(b)) => {
-                let _ = timeout(inner.opts.bye_wait, async {
-                    wr.write_all(&b).await?;
-                    wr.flush().await
-                })
-                .await;
-                // Nothing else is sent; the pipe is dropped when the peer closes or the
-                // wait of `close` ends.
-                inner.abort.cancelled().await;
-                return;
+            Some(Out::Bye(b)) => bye = Some(b),
+        }
+        if n > 0 {
+            match timeout(inner.opts.write_timeout, inner.write_shared(&buf)).await {
+                Ok(Ok(())) => {
+                    inner.last_sent.store(inner.now_ms(), Ordering::Relaxed);
+                    inner.queued.fetch_sub(n, Ordering::AcqRel);
+                }
+                Ok(Err(e)) => {
+                    inner.abort_with(
+                        ClosedBy::Transport,
+                        "transport",
+                        format!("write failed: {e}"),
+                    );
+                    return;
+                }
+                Err(_) => {
+                    inner.abort_with(
+                        ClosedBy::Transport,
+                        "overloaded",
+                        format!(
+                            "no write progress for {} s",
+                            inner.opts.write_timeout.as_secs_f32()
+                        ),
+                    );
+                    return;
+                }
             }
+        }
+        if let Some(b) = bye {
+            let _ = timeout(inner.opts.bye_wait, inner.write_shared(&b)).await;
+            // Nothing else is sent; the pipe is dropped when the peer closes or the wait of
+            // `close` ends.
+            inner.abort.cancelled().await;
+            return;
         }
     }
 }

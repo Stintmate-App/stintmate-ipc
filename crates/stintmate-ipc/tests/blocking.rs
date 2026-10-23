@@ -434,3 +434,111 @@ fn events_published_by_a_pool_handler_arrive_before_its_res() {
     });
     ep.stop();
 }
+
+/// The direct write path (T7c) keeps one order per connection: events, stream samples and
+/// `res`es written from many threads at once, some directly and some through the queue. Each
+/// publisher's events arrive in its order with no gap, a sample's `seq` only grows, and a
+/// `res` follows every event its handler published (SPEC 13.1-13.3).
+#[test]
+fn direct_writes_keep_one_order_per_connection_under_contention() {
+    let (ep, c) = pair();
+    let ev = ep.event_channel("t.e", &[1]).unwrap();
+    let marks = ep.event_channel("t.m", &[1]).unwrap();
+    let sm = ep
+        .stream_channel_with("t.x", layout(), &[1], Some(1000.0), Some(100_000))
+        .unwrap();
+    let published = Arc::new(AtomicUsize::new(0));
+    {
+        let (marks, published) = (marks.clone(), published.clone());
+        ep.method("t.pub", MethodOpts::default(), move |_c, p| {
+            for _ in 0..3 {
+                marks.publish(&p).unwrap();
+                published.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Value::from(published.load(Ordering::SeqCst) as u64))
+        })
+        .unwrap();
+    }
+    let peer = c.peer().unwrap();
+    let got = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+    let g = got.clone();
+    let _e = peer
+        .subscribe("t.e", SubscribeOptions::default(), move |d| {
+            if let Delivery::Event(e) = d {
+                let n = |k| codec::get(&e.data, k).and_then(Value::as_i64).unwrap();
+                g.lock().unwrap().push((n("t"), n("i")));
+            }
+        })
+        .unwrap();
+    let mark_sub = peer
+        .subscribe("t.m", SubscribeOptions::default(), |_| {})
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let s2 = samples.clone();
+    let _x = peer
+        .subscribe("t.x", SubscribeOptions::default(), move |d| {
+            if let Delivery::Sample(s) = d {
+                s2.lock().unwrap().push(s.seq);
+            }
+        })
+        .unwrap();
+    wait_for(3, "subscriptions", || {
+        ev.subscriber_count() + marks.subscriber_count() + sm.subscriber_count() == 3
+    });
+    const THREADS: i64 = 4;
+    const EACH: i64 = 300;
+    let mut threads = Vec::new();
+    for t in 0..THREADS {
+        let ev = ev.clone();
+        threads.push(std::thread::spawn(move || {
+            for i in 0..EACH {
+                ev.publish(&map([("t", Value::from(t)), ("i", Value::from(i))]))
+                    .unwrap();
+                if i % 50 == 0 {
+                    std::thread::yield_now();
+                }
+            }
+        }));
+    }
+    {
+        let sm = sm.clone();
+        threads.push(std::thread::spawn(move || {
+            for n in 0..600u32 {
+                sm.send(&n.to_le_bytes(), None).unwrap();
+            }
+        }));
+    }
+    for k in 0..2 {
+        let peer = peer.clone();
+        let mark_sub = mark_sub.clone();
+        threads.push(std::thread::spawn(move || {
+            for i in 0..50 {
+                let r = peer
+                    .call("t.pub", Value::from(k * 100 + i), CallOptions::new())
+                    .unwrap();
+                // Every event the handler published came before its `res`.
+                assert!(mark_sub.last_seq() >= r.as_u64().unwrap());
+            }
+        }));
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+    wait_for(5, "every event", || {
+        got.lock().unwrap().len() == (THREADS * EACH) as usize
+    });
+    let got = got.lock().unwrap();
+    for t in 0..THREADS {
+        let mine: Vec<i64> = got.iter().filter(|e| e.0 == t).map(|e| e.1).collect();
+        assert_eq!(mine, (0..EACH).collect::<Vec<_>>(), "publisher {t}");
+    }
+    wait_for(5, "the last sample", || {
+        samples.lock().unwrap().last() == Some(&600)
+    });
+    let s = samples.lock().unwrap();
+    assert!(s.windows(2).all(|w| w[0] < w[1]), "sample seqs only grow");
+    assert_eq!(mark_sub.last_seq(), 300);
+    drop(s);
+    c.close();
+    ep.stop();
+}
