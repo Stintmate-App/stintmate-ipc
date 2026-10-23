@@ -29,6 +29,13 @@ fn spec_revision() -> &'static str {
     stintmate_ipc::SPEC_REVISION
 }
 
+/// Runs the conformance tool (`stintmate-ipc-check`) with `argv`; returns its exit status. The
+/// interpreter is released while the checks run.
+#[pyfunction]
+fn check_main(py: Python<'_>, argv: Vec<String>) -> i32 {
+    py.detach(|| stintmate_ipc_check::cli::main(&argv))
+}
+
 /// Re-reads the level of the `stintmate_ipc` logger (call after changing it).
 #[pyfunction]
 fn refresh_log_level(py: Python<'_>) {
@@ -57,6 +64,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(spec_revision, m)?)?;
     m.add_function(wrap_pyfunction!(refresh_log_level, m)?)?;
+    m.add_function(wrap_pyfunction!(check_main, m)?)?;
     m.add_function(wrap_pyfunction!(_encode, m)?)?;
     m.add_function(wrap_pyfunction!(_decode, m)?)?;
     m.add("PROTOCOL_VERSION", 2)?;
