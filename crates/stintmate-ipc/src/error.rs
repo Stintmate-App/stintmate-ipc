@@ -328,6 +328,9 @@ pub enum Error {
     /// A value that cannot be encoded.
     #[error(transparent)]
     Encode(#[from] EncodeError),
+    /// An argument that cannot be used (a bad name, a closed node).
+    #[error("{0}")]
+    Invalid(String),
     /// An operating-system error.
     #[error(transparent)]
     Io(#[from] std::io::Error),

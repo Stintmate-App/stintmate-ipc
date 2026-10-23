@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, warn};
 
-use crate::calls::{CallEntry, CallResult, CallTable, ProgressFn};
+use crate::calls::{CallEntry, CallResult, CallTable, ProgressFn, ResultHook};
 use crate::codec::{self, Value};
 use crate::decl::Declarations;
 use crate::error::{Error, ProtocolError, RemoteError};
@@ -238,6 +238,10 @@ pub struct CallOptions {
     /// Whether giving up (deadline, cancel) sends `cancel` to the owner (SPEC 10.3). A `sub`
     /// wait is not cancelled (SPEC 15.1).
     pub send_cancel: bool,
+    /// Called on the reader task with the result, before the caller is woken and before the
+    /// next frame is handled: a `sub` response registers its subscription here, so the first
+    /// `evt` cannot overtake it. Must not block.
+    pub on_result: Option<ResultHook>,
 }
 
 impl Default for CallOptions {
@@ -248,6 +252,7 @@ impl Default for CallOptions {
             idempotency_key: None,
             on_progress: None,
             send_cancel: true,
+            on_result: None,
         }
     }
 }
@@ -440,7 +445,11 @@ impl Inner {
 
     /// Frames for one message, chunked when it exceeds the peer's `max_frame`.
     fn frames_for(&self, message: &Value) -> Result<Vec<u8>, Error> {
-        let encoded = codec::encode(message)?;
+        self.frames_for_encoded(&codec::encode(message)?)
+    }
+
+    /// As [`frames_for`](Self::frames_for) for a message that is already encoded.
+    fn frames_for_encoded(&self, encoded: &[u8]) -> Result<Vec<u8>, Error> {
         let lim = self.info.peer_limits;
         if encoded.len() as u64 > u64::from(lim.max_message) {
             return Err(Error::TooLarge {
@@ -450,9 +459,9 @@ impl Inner {
         }
         let mut out = Vec::with_capacity(encoded.len() + 5);
         if encoded.len() < lim.max_frame as usize {
-            wire::write_message_frame(&mut out, &encoded)?;
+            wire::write_message_frame(&mut out, encoded)?;
         } else {
-            for f in wire::chunk_frames(&encoded, wire::chunk_data_for(lim.max_frame))? {
+            for f in wire::chunk_frames(encoded, wire::chunk_data_for(lim.max_frame))? {
                 out.extend_from_slice(&f);
             }
         }
@@ -637,6 +646,14 @@ impl Connection {
         self.0.send_message(message).await
     }
 
+    /// Sends one message that is already encoded (a valid SPEC 6.1 message), waiting for room
+    /// in the writer queue. The nodes use it to pack a payload once for many subscribers.
+    pub async fn send_encoded(&self, encoded: &[u8]) -> Result<(), Error> {
+        self.0
+            .send_frames(self.0.frames_for_encoded(encoded)?)
+            .await
+    }
+
     /// As [`send_message`](Self::send_message) without waiting: fails when the queue is full.
     pub fn try_send_message(&self, message: &Value) -> Result<(), Error> {
         self.0.try_send_message(message)
@@ -728,7 +745,8 @@ impl Connection {
             }
             None => (None, None),
         };
-        let entry = CallEntry::new(tx, options.on_progress.clone(), dtx, done.clone());
+        let entry = CallEntry::new(tx, options.on_progress.clone(), dtx, done.clone())
+            .with_hook(options.on_result.clone());
         if inner.calls.insert(id, entry).is_err() {
             return Err(inner.lost());
         }
@@ -1041,9 +1059,11 @@ fn handle_req(inner: &Arc<Inner>, msg: &Value) {
         idempotency_key: get("ik").and_then(Value::as_str).map(str::to_owned),
         cancel,
     };
+    // Called here, in arrival order, so an `ordered` method can queue itself in order.
+    let request = inner.handler.request(ctx);
     let me = inner.clone();
     inner.tracker.spawn(async move {
-        let work = me.tracker.spawn(me.handler.request(ctx));
+        let work = me.tracker.spawn(request);
         let abort = work.abort_handle();
         let outcome = tokio::select! {
             r = work => r,

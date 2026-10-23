@@ -23,25 +23,47 @@
 //! * [`connection`]: the handshake over a stream, reader/writer tasks, heartbeat, `bye`, calls,
 //!   `prog`/`cancel`, and the [`connection::Handler`] the nodes build on.
 //! * [`calls`]: the table of calls, with one completion path.
+//!
+//! PRY-085 T4 adds the nodes:
+//!
+//! * [`node`], [`channels`], [`endpoint`], [`client`]: methods (ordered, idempotent), the
+//!   three channel kinds, filtered publish, `decl` updates, reconnection and re-subscription.
+//! * [`lane`]: where callbacks run; [`blocking`]: the same surface without `async`.
 
+pub mod blocking;
 pub mod calls;
+pub mod channels;
+pub mod client;
+pub mod clock;
 pub mod codec;
 pub mod connection;
 pub mod decl;
+pub mod endpoint;
 pub mod error;
 pub mod handshake;
+pub(crate) mod idem;
 pub mod keyfile;
+pub mod lane;
 pub mod layout;
 pub mod naming;
+pub mod node;
 pub mod security;
 pub mod transport;
 pub mod wire;
 
+pub use channels::{
+    EventChannel, PublishOptions, StateChannel, StreamChannel, SubscribeRequest, SubscriptionView,
+};
+pub use client::{Client, SubscriptionHandle};
 pub use codec::Value;
+pub use endpoint::{Endpoint, EndpointBuilder};
 pub use error::{
     DeclError, EncodeError, Error, KeyFileError, LayoutError, NameError, ProtocolError, RemoteError,
 };
 pub use keyfile::{KeyFile, KeySource};
+pub use node::{
+    Context, Delivery, Event, MethodOpts, Node, Peer, Sample, SubscribeOptions, Subscription,
+};
 
 /// The crate's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
