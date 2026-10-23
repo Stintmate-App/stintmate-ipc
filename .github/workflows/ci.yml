@@ -1,10 +1,8 @@
 name: ci
 
-# Minutes are limited (free organisation, Windows counts double): CI runs on pull requests and
-# by hand only; every check also runs locally before pushing (README, "Building").
+# Minutes are limited (free organisation, Windows counts double): CI runs by hand only
+# (Actions > ci > Run workflow); every check runs locally before each merge (README, "Building").
 on:
-  pull_request:
-    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 concurrency:
