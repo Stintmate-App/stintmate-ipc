@@ -1,0 +1,11 @@
+[package]
+name = "stintmate-ipc"
+description = "Stintmate IPC v2: the reference implementation of the protocol (named pipes, MessagePack)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

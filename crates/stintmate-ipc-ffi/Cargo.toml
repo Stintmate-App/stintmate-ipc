@@ -1,0 +1,16 @@
+[package]
+name = "stintmate-ipc-ffi"
+description = "C ABI of Stintmate IPC v2 (for C, C++, C# and other languages)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "stintmate_ipc"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+stintmate-ipc.workspace = true

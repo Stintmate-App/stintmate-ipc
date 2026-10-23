@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/stintmate-ipc",
+    "crates/stintmate-ipc-check",
+    "crates/stintmate-ipc-ffi",
+    "python",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/Stintmate-App/stintmate-ipc"
+authors = ["The Stintmate authors"]
+
+[workspace.dependencies]
+stintmate-ipc = { path = "crates/stintmate-ipc", version = "0.2.0" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

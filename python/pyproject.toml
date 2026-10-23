@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "stintmate-ipc"
+version = "0.2.0"
+description = "Stintmate IPC v2 for Python: a binding of the Rust implementation"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+classifiers = ["Operating System :: Microsoft :: Windows", "Programming Language :: Rust"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "stintmate_ipc._native"
+features = ["pyo3/extension-module"]
+
+[tool.uv]
+# uv rebuilds a path dependency only when these change (Rust sources included).
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "src/**/*.rs" },
+    { file = "python/**/*.py" },
+    { file = "../Cargo.toml" },
+    { file = "../Cargo.lock" },
+    { file = "../crates/**/*.rs" },
+    { file = "../crates/*/Cargo.toml" },
+]

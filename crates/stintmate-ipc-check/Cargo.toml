@@ -1,0 +1,12 @@
+[package]
+name = "stintmate-ipc-check"
+description = "Conformance checks for Stintmate IPC v2 endpoints and clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+stintmate-ipc.workspace = true

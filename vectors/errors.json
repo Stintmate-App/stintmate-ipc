@@ -1,0 +1,107 @@
+{
+  "description": "Bytes received after a completed handshake that the receiver must treat as protocol errors: send bye protocol_error, then close (SPEC.md 5.5, 6.2, 11.2). The receiver's max_frame is 1048576.",
+  "cases": [
+    {
+      "name": "kind_zero",
+      "hex": "020000000080",
+      "expect": "protocol_error",
+      "why": "kind 0x00 is not defined"
+    },
+    {
+      "name": "kind_unknown",
+      "hex": "020000001080",
+      "expect": "protocol_error",
+      "why": "kinds 0x04-0x7F are not defined"
+    },
+    {
+      "name": "length_zero",
+      "hex": "00000000",
+      "expect": "protocol_error",
+      "why": "a frame has at least a kind"
+    },
+    {
+      "name": "over_max_frame",
+      "hex": "0100100001",
+      "expect": "protocol_error",
+      "why": "length 1048577 > the receiver's max_frame 1048576: refuse on the header, do not wait for the body"
+    },
+    {
+      "name": "not_a_map",
+      "hex": "0400000001920102",
+      "expect": "protocol_error",
+      "why": "a message is a map"
+    },
+    {
+      "name": "no_t",
+      "hex": "060000000181a2696401",
+      "expect": "protocol_error",
+      "why": "t is required"
+    },
+    {
+      "name": "t_not_string",
+      "hex": "050000000181a17401",
+      "expect": "protocol_error",
+      "why": "t is a string"
+    },
+    {
+      "name": "invalid_msgpack",
+      "hex": "0200000001c1",
+      "expect": "protocol_error",
+      "why": "0xc1 is never used in MessagePack"
+    },
+    {
+      "name": "truncated_msgpack",
+      "hex": "070000000181a174a47069",
+      "expect": "protocol_error",
+      "why": "the map is cut short"
+    },
+    {
+      "name": "ext_type",
+      "hex": "0e0000000182a174a470696e67a165d40501",
+      "expect": "protocol_error",
+      "why": "extension types are not allowed ({t: ping, e: ext 5})"
+    },
+    {
+      "name": "message_inside_chunks",
+      "hex": "19000000032f0000000000000083a174a470696e67a2747301a37061640d0000000182a174a470696e67a2747302",
+      "expect": "protocol_error",
+      "why": "no kind-1 frame between the chunks of one message"
+    },
+    {
+      "name": "chunk_first_offset",
+      "hex": "19000000032f00000010000000be787878787878787878787878787878",
+      "expect": "protocol_error",
+      "why": "the first chunk has offset 0"
+    },
+    {
+      "name": "chunk_gap",
+      "hex": "19000000032f0000000000000083a174a470696e67a2747301a370616418000000032f00000020000000787878787878787878787878787878",
+      "expect": "protocol_error",
+      "why": "offsets must follow"
+    },
+    {
+      "name": "chunk_total_changes",
+      "hex": "19000000032f0000000000000083a174a470696e67a2747301a37061640d00000003300000001000000061626364",
+      "expect": "protocol_error",
+      "why": "total is the same in every chunk"
+    },
+    {
+      "name": "stream_short",
+      "hex": "140000000200000000000000000000000000000000000000",
+      "expect": "protocol_error",
+      "why": "a stream frame has a 20-byte header"
+    },
+    {
+      "name": "req_id_not_int",
+      "hex": "160000000184a174a3726571a26964a161a16da3782e79a17601",
+      "expect": "protocol_error",
+      "why": "req.id is an unsigned integer"
+    },
+    {
+      "name": "auth_after_handshake",
+      "hex": "0c0000000182a174a461757468a17602",
+      "expect": "protocol_error",
+      "why": "handshake messages after the handshake"
+    }
+  ]
+}

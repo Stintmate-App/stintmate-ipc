@@ -1,0 +1,167 @@
+{
+  "description": "The handshake with a fixed key and nonces (SPEC.md 8).",
+  "key_file_contents": "303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660d0a",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "pipe_short_name": "stintmate-pitwall-alex",
+  "version": 2,
+  "server_nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+  "client_nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+  "client_mac_input": "7374696e746d6174652d6970632f3220636c69656e7400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf7374696e746d6174652d70697477616c6c2d616c6578",
+  "client_mac": "bd32731eb4d6550beb2904133a51b53d1dc4f867e5b3910265d608c0167f5a28",
+  "server_mac_input": "7374696e746d6174652d6970632f322073657276657200c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf7374696e746d6174652d70697477616c6c2d616c6578",
+  "server_mac": "2a22ad997edf4d80fba756d7642d78e717ba3a3e5a0fd77eb1ec7a798e9e1dc9",
+  "transcript": [
+    {
+      "from": "server",
+      "hex": "940000000188a174a568656c6c6fa570726f746fad7374696e746d6174652d697063a876657273696f6e739102a56e6f6e6365c420a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfa96d61785f6672616d65ce00100000a8666561747572657390a5636c6f636b92cf000000012a05f200cf18e03d40bfe34000ab6d61785f6d657373616765ce10000000",
+      "message": {
+        "t": "hello",
+        "proto": "stintmate-ipc",
+        "versions": [
+          2
+        ],
+        "nonce": {
+          "$bin": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+        },
+        "max_frame": 1048576,
+        "features": [],
+        "clock": [
+          5000000000,
+          {
+            "$int": "1792500000000000000"
+          }
+        ],
+        "max_message": 268435456
+      }
+    },
+    {
+      "from": "client",
+      "hex": "c90100000189a174a461757468a17602a56e6f6e6365c420c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfa36d6163c420bd32731eb4d6550beb2904133a51b53d1dc4f867e5b3910265d608c0167f5a28a47065657285a3617070b4636f6e6e6563746f722d6578616d706c6573696da46e616d65b44578616d706c6553696d20636f6e6e6563746f72a776657273696f6ea5312e322e30a770726f63657373a87265636f72646572a46d65746181a373696daa6578616d706c6573696da46465636c82a76d6574686f647381b4636f6e6e6563746f722e6c6976655f6672616d6581a1769101a86368616e6e656c7381b3636f6e6e6563746f722e74656c656d6574727984a46b696e64a673747265616da1769101a7726174655f687accc8a66c61796f757483a473697a6520a66669656c64739792a973706565645f6b6d68a366333292a87468726f74746c65a366333292a56272616b65a366333292a467656172a2693892a5666c616773a2753892a372706da375313693a6747972655f63a366333204a46e616d65a974656c656d65747279a96d61785f6672616d65ce00100000ab6d61785f6d657373616765ce10000000a8666561747572657390",
+      "message": {
+        "t": "auth",
+        "v": 2,
+        "nonce": {
+          "$bin": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+        },
+        "mac": {
+          "$bin": "bd32731eb4d6550beb2904133a51b53d1dc4f867e5b3910265d608c0167f5a28"
+        },
+        "peer": {
+          "app": "connector-examplesim",
+          "name": "ExampleSim connector",
+          "version": "1.2.0",
+          "process": "recorder",
+          "meta": {
+            "sim": "examplesim"
+          }
+        },
+        "decl": {
+          "methods": {
+            "connector.live_frame": {
+              "v": [
+                1
+              ]
+            }
+          },
+          "channels": {
+            "connector.telemetry": {
+              "kind": "stream",
+              "v": [
+                1
+              ],
+              "rate_hz": 200,
+              "layout": {
+                "size": 32,
+                "fields": [
+                  [
+                    "speed_kmh",
+                    "f32"
+                  ],
+                  [
+                    "throttle",
+                    "f32"
+                  ],
+                  [
+                    "brake",
+                    "f32"
+                  ],
+                  [
+                    "gear",
+                    "i8"
+                  ],
+                  [
+                    "flags",
+                    "u8"
+                  ],
+                  [
+                    "rpm",
+                    "u16"
+                  ],
+                  [
+                    "tyre_c",
+                    "f32",
+                    4
+                  ]
+                ],
+                "name": "telemetry"
+              }
+            }
+          }
+        },
+        "max_frame": 1048576,
+        "max_message": 268435456,
+        "features": []
+      }
+    },
+    {
+      "from": "server",
+      "hex": "050100000188a174a777656c636f6d65a17602a36d6163c4202a22ad997edf4d80fba756d7642d78e717ba3a3e5a0fd77eb1ec7a798e9e1dc9a372756eb035663163326139626530336434343731a47065657284a3617070a770697477616c6ca46e616d65a750697477616c6ca776657273696f6ea5302e392e30a770726f63657373a4636f7265a46465636c82a76d6574686f647381ad70697477616c6c2e777269746583a1769101a76f726465726564c3aa6964656d706f74656e74c3a86368616e6e656c7381b570697477616c6c2e6c61705f636f6d706c6574656482a46b696e64a56576656e74a1769101ac6865617274626561745f6d73cd1388a8666561747572657390",
+      "message": {
+        "t": "welcome",
+        "v": 2,
+        "mac": {
+          "$bin": "2a22ad997edf4d80fba756d7642d78e717ba3a3e5a0fd77eb1ec7a798e9e1dc9"
+        },
+        "run": "5f1c2a9be03d4471",
+        "peer": {
+          "app": "pitwall",
+          "name": "Pitwall",
+          "version": "0.9.0",
+          "process": "core"
+        },
+        "decl": {
+          "methods": {
+            "pitwall.write": {
+              "v": [
+                1
+              ],
+              "ordered": true,
+              "idempotent": true
+            }
+          },
+          "channels": {
+            "pitwall.lap_completed": {
+              "kind": "event",
+              "v": [
+                1
+              ]
+            }
+          }
+        },
+        "heartbeat_ms": 5000,
+        "features": []
+      }
+    }
+  ],
+  "wrong_key": {
+    "key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "client_mac": "6580f2c6bee798598202fbc3da44470c5e1fb120c9d307619df5f8034874951e",
+    "server_reply_hex": "340000000183a174a3627965a4636f6465ac756e617574686f72697a6564a36d7367b561757468656e7469636174696f6e206661696c6564",
+    "note": "the server compares in constant time, answers bye unauthorized and closes; it sends no welcome"
+  },
+  "other_pipe": {
+    "pipe_short_name": "stintmate-voice-alex",
+    "client_mac": "d20e0dab553560cf3cd10bc2e090fa286a02a1cc41e00bde43b559b3e99737d9",
+    "note": "the MAC binds the pipe name: an auth for one endpoint fails on another"
+  }
+}
