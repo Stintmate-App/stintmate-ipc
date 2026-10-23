@@ -578,7 +578,12 @@ impl Endpoint {
     }
     /// Stops serving, says `bye` to every peer, and ends the handler pool.
     pub fn stop(&self) {
-        runtime().block_on(self.inner.stop());
+        self.stop_with("shutting_down", "the endpoint stops");
+    }
+
+    /// As [`stop`](Self::stop), saying `bye` with `code` and `message`.
+    pub fn stop_with(&self, code: &str, message: &str) {
+        runtime().block_on(self.inner.stop_with(code, message));
         self.node.pool.shutdown();
     }
 }

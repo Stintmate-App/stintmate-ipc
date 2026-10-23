@@ -133,8 +133,13 @@ classes are T7), `Client.connect(timeout)`, `Client.last_error`, `Client.on_conn
 For T7 or the app tasks:
 
 - `connect(..., node=client)` is used by the AMS2 connector's own reconnect loop to hand a
-  `Client`'s methods and channels to a single connection. T6 accepts and ignores `node`; T7 must
-  decide (offer the node's methods on that connection, or the connector moves to `Client`).
+  `Client`'s methods and channels to a single connection. Done in T7b: with a `Client` made
+  with `reconnect=False`, `connect` starts that client once (again after its connection ended)
+  and returns its `Peer`; the client's `call`/`connected` use that connection, and a failed
+  attempt raises at once (`PipeNotFound`, ...). Any other `node` is a `TypeError`.
+- T7b also: `Client(event_queue=)` / `connect(event_queue=)` (the local bound of an event
+  subscription, 0.1.4's option), `Endpoint.stop(code, message)` says that `bye`, and
+  `Peer.pid` is known on the client side too (the server's pid, from the pipe).
 - The AMS2 connector subclasses `Client` and overrides `reconnect_delay` (works: `Client` is
   subclassable and the method is plain Python), but the Rust client's own loop does not call
   the override; the connector calls `node.reconnect_delay(code, attempt)` itself, so it works.

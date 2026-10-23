@@ -229,9 +229,16 @@ impl Client {
     }
 
     /// Connects in the background (once).
+    ///
+    /// With reconnecting off, calling it again after that one attempt or connection ended
+    /// tries once more (a caller that owns the reconnection, like `connect(node=...)` of the
+    /// Python binding); after [`close`](Self::close) it does nothing.
     pub fn start(&self) {
         let mut t = lock(&self.inner.task);
-        if t.is_none() {
+        if self.inner.stop.is_cancelled() {
+            return;
+        }
+        if t.as_ref().is_none_or(JoinHandle::is_finished) {
             *t = Some(
                 self.node
                     .core()
@@ -256,21 +263,32 @@ impl Client {
         lock(&self.inner.last_error).clone()
     }
 
-    /// Waits until connected, at most `wait`; [`Error::NotConnected`] otherwise.
+    /// Waits until connected, at most `wait`; [`Error::NotConnected`] otherwise (at once
+    /// when reconnecting is off and the one attempt has failed: see
+    /// [`last_error`](Self::last_error)).
     pub async fn wait_connected(&self, wait: Duration) -> Result<Peer, Error> {
         let mut rx = self.inner.up.subscribe();
         let r = timeout(wait, async {
             loop {
                 if let Some(p) = self.peer() {
-                    return p;
+                    return Ok(p);
                 }
-                if rx.changed().await.is_err() {
+                if !self.inner.reconnect {
+                    let ended = lock(&self.inner.task)
+                        .as_ref()
+                        .is_none_or(JoinHandle::is_finished);
+                    if ended {
+                        return self.peer().ok_or(Error::NotConnected);
+                    }
+                    // The task ending changes nothing `rx` sees: look again soon.
+                    let _ = timeout(Duration::from_millis(5), rx.changed()).await;
+                } else if rx.changed().await.is_err() {
                     sleep(Duration::from_millis(10)).await;
                 }
             }
         })
         .await;
-        r.map_err(|_| Error::NotConnected)
+        r.unwrap_or(Err(Error::NotConnected))
     }
 
     /// Calls a method of the endpoint with the defaults (version 1, 5 s).
