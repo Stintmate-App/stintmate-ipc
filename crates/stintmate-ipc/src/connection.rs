@@ -797,6 +797,12 @@ impl Connection {
         self.0.closing.is_cancelled()
     }
 
+    /// Completes once the connection is closing or closed (when [`is_closed`](Self::is_closed)
+    /// turns true); does not wait for its tasks, see [`wait_closed`](Self::wait_closed).
+    pub async fn wait_closing(&self) {
+        self.0.closing.cancelled().await;
+    }
+
     /// Why the connection ended, once it has begun to.
     pub fn close_info(&self) -> Option<CloseInfo> {
         lock(&self.0.reason).clone()
