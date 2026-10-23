@@ -217,7 +217,12 @@ fn a_slow_callback_coalesces_state_drops_stream_samples_and_ends_events_locally(
         }
     };
     let (gs, w) = (got_s.clone(), wait_gate.clone());
+    // Set when the lane starts the first state callback (the snapshot): values sent before
+    // that may be coalesced with the snapshot itself, which is correct but not what this tests.
+    let s_started = Arc::new(AtomicBool::new(false));
+    let s_flag = s_started.clone();
     let _h1 = c.subscribe("t.s", SubscribeOptions::default(), move |d| {
+        s_flag.store(true, Ordering::SeqCst);
         w();
         if let Delivery::Event(e) = d {
             gs.lock().unwrap().push((e.seq, e.data));
@@ -246,6 +251,9 @@ fn a_slow_callback_coalesces_state_drops_stream_samples_and_ends_events_locally(
         st.subscriber_count() + sm.subscriber_count() + ev.subscriber_count() == 3
     });
     // The first state callback (the snapshot) blocks on the gate; meanwhile 20 values arrive.
+    wait_for(5, "the snapshot callback", || {
+        s_started.load(Ordering::SeqCst)
+    });
     for i in 1..=20 {
         st.set(&Value::from(i)).unwrap();
         std::thread::sleep(Duration::from_millis(2));
