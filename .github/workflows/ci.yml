@@ -19,6 +19,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  deny:
+    # cargo-deny-action is a Docker action: Linux runners only. The graph is Windows' (deny.toml).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses advisories bans sources
