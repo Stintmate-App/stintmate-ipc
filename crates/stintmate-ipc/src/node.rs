@@ -620,6 +620,9 @@ struct PumpQ {
 struct Pump {
     q: Mutex<PumpQ>,
     notify: Notify,
+    /// Held by whoever writes the peer's subscription traffic: the pump for each unit of
+    /// work, `flush_pump` for its whole drain.
+    turn: tokio::sync::Mutex<()>,
 }
 
 /// The state of one connection of a node.
@@ -864,6 +867,38 @@ impl PeerState {
     pub(crate) fn pump_schedule(&self, sub: Arc<OutSub>) {
         lock(&self.pump.q).ready.push_back(sub);
         self.pump.notify.notify_one();
+    }
+
+    /// Writes everything queued so far for this connection's subscriptions (control messages,
+    /// events and state values; not stream samples, which may overtake messages, SPEC 13.2),
+    /// so that a `res` sent after this call follows the `evt`s its handler published
+    /// (SPEC 13.3).
+    async fn flush_pump(&self) {
+        if lock(&self.outsubs).is_empty() {
+            return;
+        }
+        let Some(conn) = lock(&self.conn).clone() else {
+            return;
+        };
+        let _turn = self.pump.turn.lock().await;
+        loop {
+            let ctrl = lock(&self.pump.q).ctrl.pop_front();
+            let Some(b) = ctrl else { break };
+            if conn.send_encoded(&b).await.is_err() {
+                return;
+            }
+        }
+        let subs: Vec<Arc<OutSub>> = lock(&self.outsubs).values().cloned().collect();
+        for sub in subs {
+            for b in sub.take_messages() {
+                if !sub.is_active() {
+                    break;
+                }
+                if conn.send_encoded(&b).await.is_err() {
+                    return;
+                }
+            }
+        }
     }
 
     fn push_ctrl(&self, encoded: Vec<u8>) {
@@ -1312,19 +1347,21 @@ async fn pump_task(st: Arc<PeerState>, conn: Connection) {
                 .map(Work::Ctrl)
                 .or_else(|| q.ready.pop_front().map(Work::Sub))
         };
-        match work {
-            None => {
-                tokio::select! {
-                    () = st.stop.cancelled() => return,
-                    () = st.pump.notify.notified() => {}
-                }
+        let Some(work) = work else {
+            tokio::select! {
+                () = st.stop.cancelled() => return,
+                () = st.pump.notify.notified() => {}
             }
-            Some(Work::Ctrl(b)) => {
+            continue;
+        };
+        let _turn = st.pump.turn.lock().await;
+        match work {
+            Work::Ctrl(b) => {
                 if conn.send_encoded(&b).await.is_err() {
                     return;
                 }
             }
-            Some(Work::Sub(sub)) => {
+            Work::Sub(sub) => {
                 if !sub.is_active() {
                     continue;
                 }
@@ -1420,7 +1457,12 @@ impl Handler for PeerHandler {
             deadline: Mutex::new(deadline),
         }));
         let ordered = m.decl.ordered;
-        let run: BoxFuture<Result<Value, RemoteError>> = Box::pin(exec(m, ctx, params));
+        let st2 = st.clone();
+        let run: BoxFuture<Result<Value, RemoteError>> = Box::pin(async move {
+            let r = exec(m, ctx, params).await;
+            st2.flush_pump().await;
+            r
+        });
         if ordered { st.run_ordered(run) } else { run }
     }
 

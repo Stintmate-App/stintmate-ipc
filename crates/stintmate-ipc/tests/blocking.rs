@@ -378,3 +378,51 @@ fn reconnect_and_resubscribe_with_the_blocking_client() {
     c.close();
     ep2.stop();
 }
+
+/// SPEC 13.3 with a handler on the pool: the `evt`s it publishes before returning are written
+/// before its `res`. The client is the async one, so what it sees is the wire order.
+#[test]
+fn events_published_by_a_pool_handler_arrive_before_its_res() {
+    const N: usize = 20;
+    let (pipe, k) = (pipe_name(), key());
+    let ep = Endpoint::builder(PeerInfo::new("server"), ks(k))
+        .pipe(&pipe)
+        .handler_threads(3)
+        .build()
+        .unwrap();
+    let ch = ep.event_channel("t.ev", &[1]).unwrap();
+    let chh = ch.clone();
+    ep.method("t.burst", MethodOpts::default(), move |_c, _p| {
+        for i in 0..N {
+            chh.publish(&map([("i", Value::from(i as i64))])).unwrap();
+        }
+        Ok(Value::Nil)
+    })
+    .unwrap();
+    ep.start().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let c = common::inline_client(&pipe, k);
+        c.start();
+        c.wait_connected(Duration::from_secs(5)).await.unwrap();
+        let sink = common::Sink::default();
+        let h = c
+            .subscribe(
+                "t.ev",
+                stintmate_ipc::SubscribeOptions::default(),
+                sink.callback(),
+            )
+            .await;
+        assert!(h.is_subscribed());
+        for round in 0..200usize {
+            c.call("t.burst", Value::Nil).await.unwrap();
+            assert_eq!(sink.len(), (round + 1) * N, "round {round}: evt after res");
+        }
+        c.close().await;
+    });
+    ep.stop();
+}

@@ -99,3 +99,24 @@ impl Sink {
             .collect()
     }
 }
+
+/// A lane that runs each job on the submitting thread (the connection's reader), so a
+/// callback has run by the time the next message is looked at: what a test needs to see the
+/// order messages arrived in.
+pub struct InlineLane;
+
+impl stintmate_ipc::lane::Lane for InlineLane {
+    fn submit(&self, job: stintmate_ipc::lane::Job) {
+        job();
+    }
+}
+
+/// A client whose callbacks run inline on the reader (see [`InlineLane`]).
+pub fn inline_client(pipe: &str, k: Key) -> Client {
+    Client::builder(pipe, PeerInfo::new("client"), ks(k))
+        .lanes(Arc::new(|| {
+            Arc::new(InlineLane) as Arc<dyn stintmate_ipc::lane::Lane>
+        }))
+        .build()
+        .unwrap()
+}

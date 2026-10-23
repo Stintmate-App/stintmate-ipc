@@ -12,7 +12,7 @@ use common::*;
 use stintmate_ipc::codec::{self, Value};
 use stintmate_ipc::error::{Error, RemoteError};
 use stintmate_ipc::layout::{FieldType, Layout, Scalar};
-use stintmate_ipc::{Delivery, Endpoint, SubscribeOptions};
+use stintmate_ipc::{Delivery, Endpoint, MethodOpts, SubscribeOptions};
 
 fn layout() -> Layout {
     Layout::new(
@@ -502,5 +502,45 @@ async fn send_to_one_subscriber_and_filtered_publish() {
     for c in cs {
         c.close().await;
     }
+    ep.stop().await;
+}
+
+/// SPEC 13.3: the `evt`s a handler publishes to subscribers on the connection that made the
+/// request are written before the handler's `res`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_published_by_a_handler_arrive_before_its_res() {
+    const N: i64 = 20;
+    let (pipe, k) = (pipe_name(), key());
+    let ep = endpoint(&pipe, k);
+    ep.start().await.unwrap();
+    let c = inline_client(&pipe, k);
+    c.start();
+    c.wait_connected(Duration::from_secs(5)).await.unwrap();
+    let ch = ep.event_channel("test.ev", &[1]).unwrap();
+    let chh = ch.clone();
+    ep.method("test.burst", MethodOpts::default(), move |_c, _p| {
+        let chh = chh.clone();
+        async move {
+            for i in 0..N {
+                chh.publish(&map([("i", Value::from(i))])).unwrap();
+            }
+            Ok(Value::Nil)
+        }
+    })
+    .unwrap();
+    let sink = Sink::default();
+    let h = c
+        .subscribe("test.ev", SubscribeOptions::default(), sink.callback())
+        .await;
+    assert!(h.is_subscribed());
+    for round in 0..200usize {
+        c.call("test.burst", Value::Nil).await.unwrap();
+        assert_eq!(
+            sink.len(),
+            (round + 1) * N as usize,
+            "round {round}: an evt came after the res"
+        );
+    }
+    c.close().await;
     ep.stop().await;
 }

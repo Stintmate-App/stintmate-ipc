@@ -208,6 +208,19 @@ impl OutSub {
         self.schedule(st, was);
     }
 
+    /// Takes every queued message (the pending state value, then the events), leaving the
+    /// samples and the scheduling as they are.
+    pub(crate) fn take_messages(&self) -> Vec<Bytes> {
+        let mut q = lock(&self.q);
+        let mut out = Vec::new();
+        out.extend(q.state.take());
+        while let Some(m) = q.events.pop_front() {
+            q.bytes -= m.len();
+            out.push(m);
+        }
+        out
+    }
+
     /// What the pump writes next, and whether more is queued (then the subscription stays
     /// scheduled; otherwise the next offer schedules it again).
     pub(crate) fn take(&self, max: usize) -> (Vec<OutItem>, bool) {

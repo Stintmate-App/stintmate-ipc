@@ -643,3 +643,62 @@ async fn cancel_is_a_no_op_after_the_answer_and_idempotent() {
     c.close().await;
     ep.stop().await;
 }
+
+/// A repeat of an idempotent request that is still running waits for the first run; past its
+/// own deadline it times out, and the first run's answer is still cached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repeat_while_the_first_runs_waits_and_times_out() {
+    let (ep, c) = pair().await;
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r = runs.clone();
+    ep.method(
+        "test.slow_once",
+        MethodOpts::default().idempotent(true),
+        move |_c, _p| {
+            let r = r.clone();
+            async move {
+                sleep(Duration::from_millis(700)).await;
+                Ok(Value::from(r.fetch_add(1, Ordering::SeqCst) as i64))
+            }
+        },
+    )
+    .unwrap();
+    let first = {
+        let c = c.clone();
+        tokio::spawn(async move {
+            c.call_with(
+                "test.slow_once",
+                Value::Nil,
+                CallOptions::new().idempotency_key("k").no_timeout(),
+            )
+            .await
+        })
+    };
+    sleep(Duration::from_millis(100)).await;
+    let t0 = std::time::Instant::now();
+    let second = c
+        .call_with(
+            "test.slow_once",
+            Value::Nil,
+            CallOptions::new()
+                .idempotency_key("k")
+                .timeout(Duration::from_millis(200)),
+        )
+        .await;
+    assert!(matches!(second, Err(Error::CallTimeout)), "{second:?}");
+    assert!(t0.elapsed() < Duration::from_millis(600));
+    assert_eq!(first.await.unwrap().unwrap(), Value::from(0));
+    // The repeat did not run the handler a second time, and now gets the cached answer.
+    let third = c
+        .call_with(
+            "test.slow_once",
+            Value::Nil,
+            CallOptions::new().idempotency_key("k"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(third, Value::from(0));
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    c.close().await;
+    ep.stop().await;
+}
