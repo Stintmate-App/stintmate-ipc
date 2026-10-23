@@ -8,5 +8,18 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[lib]
+name = "stintmate_ipc_check"
+
+[[bin]]
+name = "stintmate-ipc-check"
+path = "src/main.rs"
+
 [dependencies]
 stintmate-ipc.workspace = true
+bytes.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["rt", "time", "io-util", "sync", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }

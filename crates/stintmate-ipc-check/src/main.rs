@@ -1,9 +1,8 @@
-//! `stintmate-ipc-check`: conformance checks (skeleton; the checks arrive in PRY-085 T5).
+//! `stintmate-ipc-check`: conformance checks for Stintmate IPC v2 endpoints and clients.
 
 fn main() {
-    println!(
-        "stintmate-ipc-check {} (spec {})",
-        stintmate_ipc::VERSION,
-        stintmate_ipc::SPEC_REVISION
-    );
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let code = stintmate_ipc_check::cli::main(&argv);
+    // The checks leave pipe tasks behind when the peer goes away first: leave at once.
+    std::process::exit(code);
 }

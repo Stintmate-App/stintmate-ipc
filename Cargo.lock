@@ -879,7 +879,10 @@ dependencies = [
 name = "stintmate-ipc-check"
 version = "0.2.0"
 dependencies = [
+ "bytes",
+ "serde_json",
  "stintmate-ipc",
+ "tokio",
 ]
 
 [[package]]
@@ -900,6 +903,7 @@ dependencies = [
  "rmpv",
  "serde_json",
  "stintmate-ipc",
+ "stintmate-ipc-check",
  "tracing",
 ]
 

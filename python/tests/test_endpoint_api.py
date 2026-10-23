@@ -70,6 +70,22 @@ def test_channels_and_active_hook():
     ep.stop()
 
 
-def test_check_is_a_placeholder():
-    with pytest.raises(NotImplementedError):
-        stintmate_ipc.check.main([])
+def test_check_tool(capfd):
+    assert stintmate_ipc.check.main(["--help"]) == 0
+    assert stintmate_ipc.check.main([]) == 2
+    ep, pipe, key = _pair()
+
+    @ep.method("t.echo")
+    def echo(ctx, p):
+        return p
+
+    ep.start()
+    try:
+        capfd.readouterr()
+        code = stintmate_ipc.check.main(
+            ["server", pipe, "--key-hex", key.hex(), "--fast", "--listen", "0.2", "--json"])
+        out = capfd.readouterr().out
+    finally:
+        ep.stop()
+    assert code == 0, out
+    assert '"ok": true' in out and "S07" in out
