@@ -1042,7 +1042,8 @@ fn handle_req(inner: &Arc<Inner>, msg: &Value) {
         }
         if inb.len() >= inner.opts.max_inflight {
             drop(inb);
-            let e = RemoteError::new("busy", "too many requests in flight");
+            let mut e = RemoteError::new("busy", "too many requests in flight");
+            e.retry_ms = Some(100);
             let _ = inner.try_send_message(&inner.reply(id, Err(e)));
             return;
         }

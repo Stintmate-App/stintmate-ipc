@@ -8,6 +8,8 @@
 
 mod client;
 mod convert;
+mod direct;
+mod endpoint;
 mod errors;
 mod keys;
 mod support;
@@ -33,24 +35,19 @@ fn refresh_log_level(py: Python<'_>) {
     support::refresh_log_level(py);
 }
 
-/// Encodes a value as MessagePack (for tests and diagnostics).
+/// Encodes a value as MessagePack (direct from Python objects).
 #[pyfunction]
 fn _encode<'py>(
     py: Python<'py>,
     obj: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-    let v = convert::to_value(obj)?;
-    let bytes = stintmate_ipc::codec::encode(&v)
-        .map_err(|e| pyo3::exceptions::PyTypeError::new_err(e.to_string()))?;
-    Ok(pyo3::types::PyBytes::new(py, &bytes))
+    Ok(pyo3::types::PyBytes::new(py, &direct::encode(obj)?))
 }
 
-/// Decodes MessagePack (for tests and diagnostics).
+/// Decodes MessagePack (direct to Python objects, validating the SPEC 6.1 subset).
 #[pyfunction]
 fn _decode<'py>(py: Python<'py>, data: &[u8]) -> PyResult<Bound<'py, PyAny>> {
-    let v = stintmate_ipc::codec::decode(data)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    convert::from_value(py, &v)
+    direct::decode(py, data)
 }
 
 #[pymodule]
@@ -89,6 +86,15 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::Sample>()?;
     m.add_function(wrap_pyfunction!(client::connect, m)?)?;
     m.add_function(wrap_pyfunction!(client::_shutdown, m)?)?;
+
+    m.add_class::<endpoint::Node>()?;
+    m.add_class::<endpoint::Endpoint>()?;
+    m.add_class::<endpoint::Context>()?;
+    m.add_class::<endpoint::SubscribeRequest>()?;
+    m.add_class::<endpoint::SubscriptionView>()?;
+    m.add_class::<endpoint::EventChannel>()?;
+    m.add_class::<endpoint::StateChannel>()?;
+    m.add_class::<endpoint::StreamChannel>()?;
 
     m.add_class::<testing::TestEndpoint>()?;
     m.add_function(wrap_pyfunction!(testing::start, m)?)?;

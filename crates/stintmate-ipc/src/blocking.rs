@@ -203,6 +203,14 @@ impl Node {
                     let (tx, rx) = oneshot::channel();
                     let lane = if inline { ctx.peer().lane() } else { None };
                     let job: Job = Box::new(move || {
+                        // A request whose deadline passed while it waited is not run (SPEC 10.3).
+                        if ctx.expired() {
+                            let _ = tx.send(Ok(Err(RemoteError::new(
+                                "timeout",
+                                "the deadline passed before the method ran",
+                            ))));
+                            return;
+                        }
                         let r = catch_unwind(AssertUnwindSafe(|| f(&ctx, params)));
                         let _ = tx.send(r);
                     });
@@ -511,6 +519,14 @@ impl EndpointBuilder {
     pub fn event_queue(self, events: usize, bytes: usize) -> Self {
         Self(self.0.event_queue(events, bytes))
     }
+    /// See [`crate::EndpointBuilder::handshake_timeout`].
+    pub fn handshake_timeout(self, t: Duration) -> Self {
+        Self(self.0.handshake_timeout(t))
+    }
+    /// See [`crate::EndpointBuilder::features`].
+    pub fn features(self, features: Vec<String>) -> Self {
+        Self(self.0.features(features))
+    }
     /// Builds the endpoint.
     pub fn build(self) -> Result<Endpoint, Error> {
         let threads = self.0.handler_threads_set();
@@ -542,6 +558,19 @@ impl Endpoint {
     /// The pipe path.
     pub fn path(&self) -> &str {
         self.inner.path()
+    }
+    /// The short name of the pipe (the registry entry's name).
+    pub fn short_name(&self) -> &str {
+        self.inner.short_name()
+    }
+    /// The run id announced in `welcome`.
+    pub fn run_id(&self) -> &str {
+        self.inner.run_id()
+    }
+    /// Sets the hook called when a client fails its handshake. It runs on a runtime thread:
+    /// hand the work to another thread.
+    pub fn on_handshake_failed(&self, hook: impl Fn(Option<u32>, &Error) + Send + Sync + 'static) {
+        self.inner.on_handshake_failed(hook);
     }
     /// Creates the pipe and serves.
     pub fn start(&self) -> Result<(), Error> {

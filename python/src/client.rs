@@ -377,10 +377,11 @@ impl Subscription {
 }
 
 /// A subscription that a `Client` keeps across reconnects.
-#[pyclass(module = "stintmate_ipc")]
+#[pyclass(module = "stintmate_ipc", frozen)]
 pub struct ClientSubscription {
     handle: stintmate_ipc::SubscriptionHandle,
     channel: String,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 #[pymethods]
@@ -407,6 +408,7 @@ impl ClientSubscription {
 
     /// Unsubscribes and stops re-subscribing.
     fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         self.handle.close();
     }
 }
@@ -455,7 +457,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    fn new(inner: blocking::Peer, owner: Option<blocking::Client>) -> Self {
+    pub(crate) fn new(inner: blocking::Peer, owner: Option<blocking::Client>) -> Self {
         Self {
             inner,
             _owner: owner,
@@ -475,6 +477,12 @@ impl Peer {
     #[getter]
     fn pid(&self) -> Option<u32> {
         self.inner.pid()
+    }
+
+    /// The protocol version negotiated (2).
+    #[getter]
+    fn version(&self) -> u32 {
+        2
     }
 
     /// The server's `run` id.
@@ -505,10 +513,21 @@ impl Peer {
             .map(|c| c.message)
     }
 
-    /// What the other end declares now, in its wire form (a dict).
+    /// What the other end declares now (`stintmate_ipc.decl.Declarations`).
     #[getter]
     fn decl<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        from_value(py, &self.inner.decl().to_value())
+        crate::endpoint::declarations_obj(py, &self.inner.decl())
+    }
+
+    /// Two `Peer` objects are equal when they are the same connection.
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other
+            .cast::<Peer>()
+            .is_ok_and(|o| o.borrow().inner.inner() == self.inner.inner())
+    }
+
+    fn __hash__(&self) -> isize {
+        std::ptr::from_ref(self.inner.inner().connection().info()) as isize
     }
 
     /// Ends the connection with `bye`.
@@ -531,10 +550,14 @@ impl Peer {
         on_progress: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let value = params_value(params)?;
+        let has_progress = on_progress.is_some();
         let opts = call_options(py, version, timeout, idempotency_key, on_progress)?;
         let peer = self.inner.clone();
         let m = method.to_owned();
         let r = py.detach(move || peer.call(&m, value, opts));
+        if has_progress {
+            crate::support::flush(py);
+        }
         match r {
             Ok(v) => Ok(from_value(py, &v)?.unbind()),
             Err(e) => Err(to_pyerr(py, &e)),
@@ -599,11 +622,13 @@ impl Peer {
 
 /// A client that stays connected: connects in the background, retries with backoff and
 /// re-subscribes after every reconnect.
-#[pyclass(module = "stintmate_ipc", subclass)]
+#[pyclass(extends = crate::endpoint::Node, module = "stintmate_ipc", subclass)]
 pub struct Client {
     inner: blocking::Client,
     last_error: Arc<Mutex<Option<ErrSpec>>>,
     on_connect_error: Arc<Mutex<Option<Py<PyAny>>>>,
+    /// Live subscriptions: one lives until `close()`, whether or not the caller keeps it.
+    subs: Mutex<Vec<Py<ClientSubscription>>>,
 }
 
 impl Client {
@@ -642,6 +667,7 @@ impl Client {
             inner,
             last_error,
             on_connect_error: user_cb,
+            subs: Mutex::default(),
         })
     }
 
@@ -671,8 +697,10 @@ impl Client {
         info: &Bound<'_, PeerInfo>,
         key: &Bound<'_, PyAny>,
         reconnect: bool,
-    ) -> PyResult<Self> {
-        Self::build(py, pipe, info, key, reconnect)
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let client = Self::build(py, pipe, info, key, reconnect)?;
+        let node = crate::endpoint::Node::new(&client.inner);
+        Ok(PyClassInitializer::from(node).add_subclass(client))
     }
 
     /// Seconds to wait (before jitter) before the next attempt, chosen by the `bye` code that
@@ -749,10 +777,15 @@ impl Client {
         on_progress: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let value = params_value(params)?;
+        let has_progress = on_progress.is_some();
         let opts = call_options(py, version, timeout, idempotency_key, on_progress)?;
         let c = self.inner.clone();
         let m = method.to_owned();
-        match py.detach(move || c.call_with(&m, value, opts)) {
+        let r = py.detach(move || c.call_with(&m, value, opts));
+        if has_progress {
+            crate::support::flush(py);
+        }
+        match r {
             Ok(v) => Ok(from_value(py, &v)?.unbind()),
             Err(e) => Err(to_pyerr(py, &e)),
         }
@@ -801,16 +834,25 @@ impl Client {
             ClientSubscription {
                 handle,
                 channel: channel.to_owned(),
+                closed: false.into(),
             },
         )?;
         let _ = slot.set(obj.clone_ref(py).into_any());
+        let mut subs = lock(&self.subs);
+        subs.retain(|s| !s.get().closed.load(Ordering::Acquire));
+        subs.push(obj.clone_ref(py));
+        drop(subs);
         Ok(obj)
     }
 
     /// Closes the connection and stops reconnecting.
     fn close(&self, py: Python<'_>) {
         let c = self.inner.clone();
-        py.detach(move || c.close());
+        let subs = std::mem::take(&mut *lock(&self.subs));
+        py.detach(move || {
+            c.close();
+            drop(subs);
+        });
     }
 
     /// As `close()`.

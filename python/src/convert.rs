@@ -9,9 +9,9 @@ use pyo3::types::{
 use rmpv::Value;
 
 /// Deepest nesting accepted (the codec's limit).
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_DEPTH: usize = 64;
 
-fn type_name(obj: &Bound<'_, PyAny>) -> String {
+pub(crate) fn type_name(obj: &Bound<'_, PyAny>) -> String {
     obj.get_type()
         .name()
         .map(|n| n.to_string())

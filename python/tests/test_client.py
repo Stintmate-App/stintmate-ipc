@@ -31,7 +31,7 @@ def test_peer_properties(client, endpoint):
     assert p is not None and p.is_open and client.connected
     assert p.info.app == "t6test" and p.pid is None
     assert len(p.run) == 16
-    assert "t.echo" in p.decl["methods"] and "t.events" in p.decl["channels"]
+    assert "t.echo" in p.decl.methods and "t.events" in p.decl.channels
     assert p.call("t.echo", {"x": 1}) == {"x": 1}
     p.close()
     assert wait_for(lambda: not p.is_open)
