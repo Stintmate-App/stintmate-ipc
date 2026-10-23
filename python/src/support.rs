@@ -23,6 +23,7 @@ fn callback_queue() -> &'static Sender<PyJob> {
         std::thread::Builder::new()
             .name("stintmate-ipc-py-callbacks".into())
             .spawn(move || {
+                ON_CALLBACK_THREAD.with(|c| c.set(true));
                 for job in rx {
                     if SHUTDOWN.load(Ordering::Acquire) {
                         continue;
@@ -33,6 +34,25 @@ fn callback_queue() -> &'static Sender<PyJob> {
             .expect("a thread starts");
         tx
     })
+}
+
+thread_local! {
+    static ON_CALLBACK_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Waits until the callbacks queued so far have run (so a call that reports progress returns
+/// after its last `on_progress`). Does nothing on the callback thread itself.
+pub fn flush(py: Python<'_>) {
+    if ON_CALLBACK_THREAD.with(std::cell::Cell::get) {
+        return;
+    }
+    let (tx, rx) = crossbeam_channel::bounded::<()>(1);
+    enqueue(move |_| {
+        let _ = tx.send(());
+    });
+    py.detach(|| {
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+    });
 }
 
 /// Runs `job` on the library's callback thread, in order with the other queued jobs.
