@@ -16,8 +16,17 @@
 //! * [`keyfile`]: the shared key file (8.1).
 //! * [`handshake`]: `hello`, `auth`, `welcome`, the MACs and the failures (8.2-8.8).
 //! * [`security`]: the current user, user-only DACLs (shared with the pipe listener).
+//!
+//! PRY-085 T3 adds the I/O, on Tokio:
+//!
+//! * [`transport`]: the pipe listener and the client open (SPEC 3).
+//! * [`connection`]: the handshake over a stream, reader/writer tasks, heartbeat, `bye`, calls,
+//!   `prog`/`cancel`, and the [`connection::Handler`] the nodes build on.
+//! * [`calls`]: the table of calls, with one completion path.
 
+pub mod calls;
 pub mod codec;
+pub mod connection;
 pub mod decl;
 pub mod error;
 pub mod handshake;
@@ -25,10 +34,13 @@ pub mod keyfile;
 pub mod layout;
 pub mod naming;
 pub mod security;
+pub mod transport;
 pub mod wire;
 
 pub use codec::Value;
-pub use error::{DeclError, EncodeError, KeyFileError, LayoutError, NameError, ProtocolError};
+pub use error::{
+    DeclError, EncodeError, Error, KeyFileError, LayoutError, NameError, ProtocolError, RemoteError,
+};
 pub use keyfile::{KeyFile, KeySource};
 
 /// The crate's version.

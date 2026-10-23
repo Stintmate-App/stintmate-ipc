@@ -204,3 +204,131 @@ pub enum KeyFileError {
         reason: String,
     },
 }
+
+/// The error a method returns to its caller: the `e` of a failed `res` (SPEC 10.2).
+#[derive(Debug, Clone, PartialEq, Error)]
+#[error("{code}: {message}")]
+pub struct RemoteError {
+    /// A code of SPEC 11.1 or an application code (lowercase snake case).
+    pub code: String,
+    /// One sentence for people.
+    pub message: String,
+    /// Machine-readable details.
+    pub details: Option<crate::codec::Value>,
+    /// When retrying makes sense, after how many milliseconds.
+    pub retry_ms: Option<u64>,
+}
+
+impl RemoteError {
+    /// An error with a code and a message.
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+            retry_ms: None,
+        }
+    }
+
+    /// The `e` map of a `res`.
+    pub fn to_value(&self) -> crate::codec::Value {
+        use crate::codec::Value;
+        let mut pairs: Vec<(&str, Value)> = vec![
+            ("code", self.code.as_str().into()),
+            ("msg", self.message.as_str().into()),
+        ];
+        if let Some(d) = &self.details {
+            pairs.push(("details", d.clone()));
+        }
+        if let Some(r) = self.retry_ms {
+            pairs.push(("retry_ms", r.into()));
+        }
+        crate::codec::map(pairs)
+    }
+
+    /// Reads an `e` map; missing or ill-typed fields get placeholders (the receiver of a
+    /// `res` never fails on the text of an error).
+    pub fn from_value(e: &crate::codec::Value) -> Self {
+        use crate::codec::get;
+        Self {
+            code: get(e, "code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("internal")
+                .to_owned(),
+            message: get(e, "msg")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(),
+            details: get(e, "details").filter(|v| !v.is_nil()).cloned(),
+            retry_ms: get(e, "retry_ms").and_then(|v| v.as_u64()),
+        }
+    }
+}
+
+/// Everything the transport and the connection can fail with.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Nobody serves the pipe (`ERROR_FILE_NOT_FOUND`): the program is not running.
+    #[error("nobody serves {0}")]
+    PipeNotFound(String),
+    /// Every instance stayed taken until the deadline (`ERROR_PIPE_BUSY`).
+    #[error("every instance of {0} is busy")]
+    PipeBusy(String),
+    /// Another server already listens on the pipe (SPEC 3.2).
+    #[error("another process already serves {0}")]
+    EndpointInUse(String),
+    /// This side ended the handshake (the `bye` was sent unless the pipe was already gone).
+    #[error(transparent)]
+    Handshake(#[from] crate::handshake::HandshakeFailure),
+    /// The handshake did not complete in time (SPEC 15.1).
+    #[error("the handshake did not complete in time")]
+    HandshakeTimeout,
+    /// The peer sent `bye` (during the handshake: why it refused).
+    #[error("the peer closed the connection: {code}: {message}")]
+    PeerBye {
+        /// The `bye` code.
+        code: String,
+        /// The `bye` text.
+        message: String,
+    },
+    /// The key file.
+    #[error(transparent)]
+    KeyFile(#[from] KeyFileError),
+    /// There is no connection (never established, or closed before the call started).
+    #[error("not connected")]
+    NotConnected,
+    /// The connection ended while the call waited (`disconnected`, SPEC 10.12).
+    #[error("connection lost: {message}")]
+    ConnectionLost {
+        /// The peer's `bye` code, when it sent one.
+        code: Option<String>,
+        /// Why the connection ended.
+        message: String,
+    },
+    /// The deadline passed before the `res`.
+    #[error("no response in time")]
+    CallTimeout,
+    /// The caller cancelled.
+    #[error("call cancelled")]
+    CallCancelled,
+    /// The owner answered with an error.
+    #[error(transparent)]
+    Remote(#[from] RemoteError),
+    /// A message larger than the peer accepts.
+    #[error("message of {size} bytes exceeds the peer's max_message {max}")]
+    TooLarge {
+        /// The encoded size.
+        size: usize,
+        /// The peer's limit.
+        max: u32,
+    },
+    /// The peer broke the protocol (or this side could not encode).
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+    /// A value that cannot be encoded.
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
+    /// An operating-system error.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
