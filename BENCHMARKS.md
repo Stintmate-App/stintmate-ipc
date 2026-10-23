@@ -143,3 +143,50 @@ worker on the pipe's completion and the callback lane; 0.1.4 ran the callback on
 thread) and the stream p99 by about 10 us, which on this PC is scheduling noise (the bare
 pipe's own p99 is 25-50 us). Both are better than 0.1.4 on the same day. The CPU target
 (< 0.5 % per side) is not met by either implementation on this PC; T7c is at 0.1.4's level.
+
+## Final (PRY-085, before the cutover, 2026-10-23, this PC)
+
+Tree: `rust` head `6ce0ee7` (T7c's fast path plus T7d and T7e), release build of the binding
+into a venv in the worktree (`maturin develop --release`). Method: exactly that of the T7c
+section: `python/bench/bench.py --high --repeat 5 --scale 0.5 --only rr,event,stream` (every
+process in the HIGH priority class, 5 runs, the median of the per-run medians) and, Rust to
+Rust, `cargo test --release -p stintmate-ipc --test latency -- --ignored --nocapture
+--test-threads 1`. 0.1.4 (tag `v0.1.4`, extracted with `git archive` into its own venv) ran its
+own `bench/bench.py` with one `SetPriorityClass(HIGH)` line added at the start of `main`, the
+same parameters. The sets were alternated in one session (Rust, 0.1.4, 0.1.4, Rust, 0.1.4,
+Rust, 0.1.4: 3 Rust sets, 4 0.1.4 sets) and Rust to Rust ran 3 times; the ranges below are the
+spread across sets. The codec is `_native._encode/_decode` against 0.1.4's `wire.pack/unpack`
+on the 89 B `req` of `python/bench/codec.py` (best of 5 x 200 000, 3 repetitions).
+
+| Metric (us; Python to Python) | Final Rust (3 sets) | 0.1.4 (4 sets) | T7c as published |
+|---|---|---|---|
+| rr p50 / p99 | 43-45 / 56-74 | 67-70 / 95-121 | 45 / 91 |
+| event 200 Hz p50 (p99) | 46-56 (117-133) | 61-78 (153-165) | 59 (166) |
+| stream 200 Hz 48 B p50 / p99 | 33-39 / 93-99 | 40-41 / 101-106 | 38 / 109 |
+| stream CPU publisher / subscriber (%) | 0.62-1.04 / 0.73-0.83 | 0.73-1.04 / 0.73-0.83 | 0.94 / 0.63 |
+| codec `req` (89 B) encode / decode | 0.49 / 0.84-0.89 | 1.30 / 1.00 | 0.49 / 0.85 |
+
+Per-set medians (p50 / p99): Rust rr 45/74, 43/60, 44/56; event 56/133, 48/124, 46/117; stream
+39/99, 35/98, 33/93. 0.1.4 rr 70/121, 68/102, 69/98, 67/95; event 78/165, 64/167, 61/156,
+61/153; stream 41/101, 40/104, 40/106, 40/104. Within a set, the Rust per-run p50 stays within
++-4 us (one run of 50 against 43 in a set), the 0.1.4 per-run p50 within +-3 us.
+
+| Rust to Rust (us, p50 (p99), 3 runs) | Final | T7c as published |
+|---|---|---|
+| rr, pool handler | 28.4 (45.8), 30.4 (45.4), 28.7 (64.6) | 29-34 |
+| rr, inline handler | 25.7, 29.3, 25.4 (p99 48-50) | |
+| event 200 Hz | 32.2 (108.6), 31.2 (92.3), 32.4 (83.5) | 40 (109) |
+| stream 200 Hz | 29.0 (90.7), 27.5 (78.4), 28.8 (91.0) | 37-39 (110) |
+| transport floor (64 B ping-pong) | 12.3-12.9 (p99 33-41) | 13 |
+
+Verdict. No row is worse than 0.1.4 beyond the noise. The Python binding is ahead of 0.1.4 on
+rr (about 25 us at p50 and 30-40 us at p99), on event (10-30 us at p50) and on the codec
+(2.7x faster to encode, 1.2x to decode); stream p50 is 5-7 us ahead and stream p99 is equal to
+slightly ahead (93-99 against 101-106 us, the gap is within the +-8 us spread of p99 across
+sets). CPU is level with 0.1.4 (0.6-1.0 % per side on both; the Windows 15.6 ms tick makes this
+column unreliable and the < 0.5 % target is met by neither). Against T7c's published numbers
+the final tree is equal or slightly better (event p50 46-56 against 59, stream p50 33-39
+against 38; Rust to Rust event and stream are 8-10 us lower than in T7c, which T7c's own
+caveat on a busier PC may explain), so T7d and T7e (0.1.4 semantics, `Peer.closed`, layout)
+cost nothing measurable. Still missed against plan 6: event p50 <= 50 us in the first Rust set
+(56; 46 and 48 in the other two) and the CPU target.
