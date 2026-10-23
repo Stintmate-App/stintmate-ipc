@@ -79,7 +79,12 @@ fn the_key_file_is_for_the_current_user_only() {
     // protected (no inheritance) and one ACE: the current user
     assert!(sddl.starts_with("D:P"), "{sddl}");
     assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
-    assert!(sddl.contains(&format!(";{sid})")), "{sddl} for {sid}");
+    // SDDL writes the built-in Administrator (RID 500, e.g. a CI runner's user) as its alias "LA"
+    let alias_ok = sid.ends_with("-500") && sddl.contains(";LA)");
+    assert!(
+        sddl.contains(&format!(";{sid})")) || alias_ok,
+        "{sddl} for {sid}"
+    );
     assert!(security::user_only_sddl("FA").unwrap().contains(&sid));
     let _ = fs::remove_dir_all(d);
 }
