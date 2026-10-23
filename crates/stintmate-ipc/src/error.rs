@@ -158,3 +158,49 @@ impl From<LayoutError> for DeclError {
         DeclError(e.to_string())
     }
 }
+
+/// An invalid endpoint name part (SPEC 4.1).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum NameError {
+    /// An app id that does not match `^[a-z0-9][a-z0-9_-]{0,47}$`.
+    #[error("invalid app id {0:?} (^[a-z0-9][a-z0-9_-]{{0,47}}$)")]
+    InvalidApp(String),
+    /// A process id that does not match `^[a-z0-9][a-z0-9_-]{0,31}$`.
+    #[error("invalid process id {0:?} (^[a-z0-9][a-z0-9_-]{{0,31}}$)")]
+    InvalidProcess(String),
+    /// A pipe name that is empty or has a backslash after the pipe prefix.
+    #[error("invalid pipe name {0:?}")]
+    InvalidPipe(String),
+    /// The Windows user name could not be read.
+    #[error("cannot read the Windows user name: {0}")]
+    User(String),
+}
+
+/// A problem with the key file (SPEC 8.1). The messages never contain the key.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum KeyFileError {
+    /// There is no workspace, so no key file.
+    #[error(
+        "no Stintmate workspace (set STINTMATE_WORKSPACE or run the hub onboarding), so no key file"
+    )]
+    NoWorkspace,
+    /// The file does not exist.
+    #[error("key file not found: {0}")]
+    NotFound(String),
+    /// The file cannot be read or created.
+    #[error("cannot access the key file {path}: {message}")]
+    Io {
+        /// The file.
+        path: String,
+        /// The system message.
+        message: String,
+    },
+    /// The contents are not 64 hexadecimal characters.
+    #[error("{path}: {reason}")]
+    Invalid {
+        /// The file (empty when parsing bytes).
+        path: String,
+        /// What is wrong.
+        reason: String,
+    },
+}
