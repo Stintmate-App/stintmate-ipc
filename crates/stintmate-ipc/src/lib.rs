@@ -9,15 +9,27 @@
 //! * [`layout`]: stream layouts and the packing of samples (9.3).
 //! * [`decl`]: declarations of methods and channels (9.1-9.3).
 //! * [`error`]: the error types.
+//!
+//! PRY-085 T2 adds the connection setup, still without I/O:
+//!
+//! * [`naming`]: endpoint names, the workspace and the registry (SPEC 4).
+//! * [`keyfile`]: the shared key file (8.1).
+//! * [`handshake`]: `hello`, `auth`, `welcome`, the MACs and the failures (8.2-8.8).
+//! * [`security`]: the current user, user-only DACLs (shared with the pipe listener).
 
 pub mod codec;
 pub mod decl;
 pub mod error;
+pub mod handshake;
+pub mod keyfile;
 pub mod layout;
+pub mod naming;
+pub mod security;
 pub mod wire;
 
 pub use codec::Value;
-pub use error::{DeclError, EncodeError, LayoutError, ProtocolError};
+pub use error::{DeclError, EncodeError, KeyFileError, LayoutError, NameError, ProtocolError};
+pub use keyfile::{KeyFile, KeySource};
 
 /// The crate's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
