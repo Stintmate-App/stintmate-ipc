@@ -26,6 +26,9 @@ hmac = "0.13.0"
 sha2 = "0.11.1"
 getrandom = "0.4.3"
 windows-sys = "0.61.2"
+tokio = "1.54.1"
+tokio-util = { version = "0.7.20", default-features = false }
+tracing = "0.1.44"
 proptest = "1.12.0"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
