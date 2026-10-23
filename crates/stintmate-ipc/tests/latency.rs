@@ -108,3 +108,72 @@ fn pipe_floor() {
         pct(lat, 0.99)
     );
 }
+
+/// Event and stream delivery Rust to Rust (one process, blocking façade): 1000 items at
+/// 200 Hz, latency from the publishing call to the subscriber's callback.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn event_and_stream_latency() {
+    use std::sync::{Arc, Mutex, OnceLock};
+    use stintmate_ipc::SubscribeOptions;
+    use stintmate_ipc::layout::{FieldType, Layout};
+    use stintmate_ipc::{Delivery, codec};
+
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let stamp = || BASE.get_or_init(Instant::now).elapsed().as_nanos() as i64;
+    let (pipe, k) = (pipe_name(), key());
+    let ep = Endpoint::builder(PeerInfo::new("server"), ks(k))
+        .pipe(&pipe)
+        .build()
+        .unwrap();
+    let ev = ep.event_channel("t.e", &[1]).unwrap();
+    let layout = Layout::new([("v", FieldType::F32, 12)], Some("bench48")).unwrap();
+    let sm = ep
+        .stream_channel_with("t.s", layout, &[1], Some(200.0), None)
+        .unwrap();
+    ep.start().unwrap();
+    let c = Client::new(&pipe, PeerInfo::new("client"), ks(k)).unwrap();
+    c.start();
+    c.wait_connected(Duration::from_secs(5)).unwrap();
+    let lat = Arc::new(Mutex::new(Vec::<f64>::new()));
+    let l2 = lat.clone();
+    let _h = c.subscribe("t.e", SubscribeOptions::default(), move |d| {
+        if let Delivery::Event(e) = d
+            && let Some(t) = e.data.as_i64()
+        {
+            l2.lock().unwrap().push((stamp() - t) as f64 / 1e3);
+        }
+    });
+    let l3 = lat.clone();
+    let _h2 = c.subscribe("t.s", SubscribeOptions::default(), move |d| {
+        if let Delivery::Sample(s) = d {
+            l3.lock().unwrap().push((stamp() - s.t_ns) as f64 / 1e3);
+        }
+    });
+    while ev.subscriber_count() + sm.subscriber_count() < 2 {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let body = vec![0u8; 48];
+    for what in ["event", "stream"] {
+        std::thread::sleep(Duration::from_millis(200));
+        lat.lock().unwrap().clear();
+        for _ in 0..1000 {
+            std::thread::sleep(Duration::from_millis(5));
+            if what == "event" {
+                ev.publish(&codec::Value::from(stamp())).unwrap();
+            } else {
+                sm.send(&body, Some(stamp())).unwrap();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let v = std::mem::take(&mut *lat.lock().unwrap());
+        println!(
+            "{what} 200 Hz: n {} p50 {:.1} us p99 {:.1} us",
+            v.len(),
+            pct(v.clone(), 0.5),
+            pct(v, 0.99)
+        );
+    }
+    c.close();
+    ep.stop();
+}

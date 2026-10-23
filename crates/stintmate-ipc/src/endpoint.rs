@@ -74,6 +74,11 @@ impl EndpointBuilder {
         self.cfg.event_queue_bytes = bytes;
         self
     }
+    /// See [`NodeConfig::direct_writes`](crate::NodeConfig::direct_writes).
+    pub fn direct_writes(mut self, on: bool) -> Self {
+        self.cfg.direct_writes = on;
+        self
+    }
     /// `max_frame` and `max_message`.
     pub fn limits(mut self, limits: Limits) -> Self {
         self.cfg.limits = limits;

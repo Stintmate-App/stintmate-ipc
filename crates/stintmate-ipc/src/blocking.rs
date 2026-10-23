@@ -43,12 +43,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The process-wide runtime (2 workers), created on first use.
+/// The process-wide runtime, created on first use: one I/O worker (handlers and callbacks
+/// run on their own threads, so the runtime only moves bytes; a second worker only added
+/// work-stealing wake-ups, PRY-085 T7c).
 pub fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(1)
             .thread_name("stintmate-ipc-io")
             .enable_all()
             .build()
@@ -518,6 +520,10 @@ impl EndpointBuilder {
     /// See [`crate::EndpointBuilder::event_queue`].
     pub fn event_queue(self, events: usize, bytes: usize) -> Self {
         Self(self.0.event_queue(events, bytes))
+    }
+    /// See [`crate::EndpointBuilder::direct_writes`].
+    pub fn direct_writes(self, on: bool) -> Self {
+        Self(self.0.direct_writes(on))
     }
     /// See [`crate::EndpointBuilder::handshake_timeout`].
     pub fn handshake_timeout(self, t: Duration) -> Self {

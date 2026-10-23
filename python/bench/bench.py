@@ -56,6 +56,45 @@ def summary(lat_ns: list[int]) -> dict[str, float]:
             "max": max(us), "mean": statistics.fmean(us)}
 
 
+def thread_times() -> dict[str, float]:
+    """CPU seconds per thread name of this process (Windows; ``BENCH_THREADS=1``): which
+    thread spends the CPU of a scenario."""
+    if sys.platform != "win32":
+        return {}
+    import ctypes
+    from ctypes import wintypes as w
+    k32 = ctypes.windll.kernel32
+
+    class TE32(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD), ("th32ThreadID", w.DWORD),
+                    ("th32OwnerProcessID", w.DWORD), ("tpBasePri", w.LONG),
+                    ("tpDeltaPri", w.LONG), ("dwFlags", w.DWORD)]
+    k32.CreateToolhelp32Snapshot.restype = w.HANDLE
+    k32.OpenThread.restype = w.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x4, 0)
+    te = TE32()
+    te.dwSize = ctypes.sizeof(TE32)
+    out: dict[str, float] = {}
+    ok = k32.Thread32First(snap, ctypes.byref(te))
+    while ok:
+        if te.th32OwnerProcessID == os.getpid():
+            h = k32.OpenThread(0x0800 | 0x0040, False, te.th32ThreadID)
+            if h:
+                ft = [w.FILETIME() for _ in range(4)]
+                k32.GetThreadTimes(h, *[ctypes.byref(f) for f in ft])
+                cpu = sum((f.dwHighDateTime << 32 | f.dwLowDateTime) for f in ft[2:]) / 1e7
+                name = ctypes.c_wchar_p()
+                if k32.GetThreadDescription(h, ctypes.byref(name)) >= 0 and name.value:
+                    label = name.value
+                else:
+                    label = f"tid{te.th32ThreadID}"
+                out[label] = round(out.get(label, 0.0) + cpu, 3)
+                k32.CloseHandle(h)
+        ok = k32.Thread32Next(snap, ctypes.byref(te))
+    k32.CloseHandle(snap)
+    return out
+
+
 # ---------------------------------------------------------------------------- roles
 
 
@@ -96,6 +135,8 @@ def role_server(pipe: str, key: bytes, mode: str, n: int, rate: float, subs: int
     wall = time.perf_counter() - w0
     cpu = 100 * (time.process_time() - c0) / wall
     time.sleep(1.0)
+    if os.environ.get("BENCH_THREADS") == "1":
+        print("publisher threads (cpu s):", thread_times(), file=sys.stderr, flush=True)
     print(json.dumps({"cpu_pct": cpu, "pace_late_us_p50": pct(late, 0.5) * 1e6,
                       "pace_late_us_p99": pct(late, 0.99) * 1e6}), flush=True)
     sys.stdin.readline()
@@ -143,6 +184,8 @@ def role_sub(pipe: str, key: bytes, mode: str, n: int, deliver: str) -> None:
     done.wait(n / 100 + 60)
     cpu = 100 * (time.process_time() - first[0]) / (time.perf_counter() - first[1]) \
         if first else 0.0
+    if os.environ.get("BENCH_THREADS") == "1":
+        print("subscriber threads (cpu s):", thread_times(), file=sys.stderr, flush=True)
     c.close()
     print(json.dumps({"lat_ns": lat, "cpu_pct": cpu}), flush=True)
 
@@ -202,7 +245,17 @@ def merge(reps: list[dict]) -> dict:
 
 
 
+def set_priority() -> None:
+    """``BENCH_PRIORITY=high``: this process in the HIGH priority class (every role sets its
+    own), so that other work on the PC disturbs the runs less."""
+    if os.environ.get("BENCH_PRIORITY") == "high" and sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x80)  # HIGH_PRIORITY_CLASS
+
+
 def main() -> int:
+    set_priority()
     if len(sys.argv) > 1 and sys.argv[1] in ("server", "rr", "sub"):
         role, args = sys.argv[1], sys.argv[2:]
         if role == "server":
@@ -222,7 +275,12 @@ def main() -> int:
     ap.add_argument("--scale", type=float, default=1.0, help="multiply every n")
     ap.add_argument("--repeat", type=int, default=1,
                     help="run each scenario N times and report the medians")
+    ap.add_argument("--high", action="store_true",
+                    help="every process in the HIGH priority class (BENCH_PRIORITY=high)")
     a = ap.parse_args()
+    if a.high:
+        os.environ["BENCH_PRIORITY"] = "high"
+        set_priority()
     q = (0.2 if a.quick else 1.0) * a.scale
     plan = {"rr": ("rr", 5000, 0, 0), "event": ("event", 1000, 200, 1),
             "stream": ("stream", 6000, 200, 1), "stream3": ("stream", 3000, 200, 3)}
@@ -242,6 +300,16 @@ def main() -> int:
         csub = " / ".join(f"{x:.2f}" for x in r["cpu_sub_pct"]) if "cpu_sub_pct" in r else "-"
         print(f"| {name} | {lat['n']} | {lat['p50']:.0f} | {lat['p95']:.0f} | "
               f"{lat['p99']:.0f} | {lat['max']:.0f} | {cpub} | {csub} |")
+        if r.get("repeats", 1) > 1:
+            each = r["each"]
+            p50s = " ".join(f"{e['lat']['p50']:.0f}" for e in each)
+            p99s = " ".join(f"{e['lat']['p99']:.0f}" for e in each)
+            line = f"  {name} runs: p50 [{p50s}] p99 [{p99s}]"
+            if "cpu_pub_pct" in r:
+                cp = " ".join(f"{e['cpu_pub_pct']:.2f}" for e in each)
+                cs = " ".join(f"{e['cpu_sub_pct'][0]:.2f}" for e in each)
+                line += f" cpu pub [{cp}] sub [{cs}]"
+            print(line)
         if "received" in r and any(x != r["sent"] for x in r["received"]):
             print(f"  (!) {name}: received {r['received']} of {r['sent']}")
     if a.json:

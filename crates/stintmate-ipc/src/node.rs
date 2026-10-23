@@ -300,6 +300,10 @@ pub struct NodeConfig {
     pub max_inflight: usize,
     /// Handshake timeout.
     pub handshake_timeout: Duration,
+    /// Write subscription traffic from the publishing thread while the connection's pump and
+    /// writer are idle (the default): no wake-up of a runtime thread per event or sample.
+    /// Off, everything goes through the pump; the queue rules (SPEC 12) apply either way.
+    pub direct_writes: bool,
 }
 
 impl Default for NodeConfig {
@@ -312,6 +316,7 @@ impl Default for NodeConfig {
             event_queue_bytes: 8 * 1024 * 1024,
             max_inflight: 1024,
             handshake_timeout: crate::handshake::HANDSHAKE_TIMEOUT,
+            direct_writes: true,
         }
     }
 }
@@ -720,8 +725,9 @@ struct PumpQ {
 struct Pump {
     q: Mutex<PumpQ>,
     notify: Notify,
-    /// Held by whoever writes the peer's subscription traffic: the pump for each unit of
-    /// work, `flush_pump` for its whole drain.
+    /// Held by whoever writes the peer's subscription traffic: the pump while it takes and
+    /// writes each unit of work, `flush_pump` for its whole drain, an offering thread for its
+    /// direct write (`pump_direct`).
     turn: tokio::sync::Mutex<()>,
 }
 
@@ -972,8 +978,64 @@ impl PeerState {
     // ---- pump
 
     pub(crate) fn pump_schedule(&self, sub: Arc<OutSub>) {
+        if self.pump_direct(&sub) {
+            return;
+        }
         lock(&self.pump.q).ready.push_back(sub);
         self.pump.notify.notify_one();
+    }
+
+    /// The fast path of an offer (plan section 6, T7c): when the pump has nothing queued or
+    /// in hand and the connection's writer is idle, the offering thread writes what `sub`
+    /// queued itself, with no wake-up of the pump or of the writer. False when the pump must
+    /// take it (then the subscription is still scheduled).
+    fn pump_direct(&self, sub: &Arc<OutSub>) -> bool {
+        if !self.node.cfg.direct_writes {
+            return false;
+        }
+        let Some(conn) = lock(&self.conn).clone() else {
+            return false;
+        };
+        let Ok(_turn) = self.pump.turn.try_lock() else {
+            return false;
+        };
+        {
+            let q = lock(&self.pump.q);
+            if !q.ctrl.is_empty() || !q.ready.is_empty() {
+                return false;
+            }
+        }
+        conn.write_direct_with(|w| {
+            loop {
+                if !sub.is_active() {
+                    return true;
+                }
+                let (items, more) = sub.take(1);
+                let mut written = true;
+                for it in items {
+                    let frames = match it {
+                        OutItem::Msg(b) => w.frames_for_encoded(&b),
+                        OutItem::Sample {
+                            seq,
+                            t_ns,
+                            flags,
+                            body,
+                        } => w.stream_frame(sub.sid, seq as u32, t_ns, flags, &body),
+                    };
+                    match frames {
+                        Ok(f) => written = w.write(&f),
+                        Err(e) => warn!(sid = sub.sid, "not sent: {e}"),
+                    }
+                }
+                if !more {
+                    return true;
+                }
+                if !written {
+                    return false;
+                }
+            }
+        })
+        .unwrap_or(false)
     }
 
     /// Writes everything queued so far for this connection's subscriptions (control messages,
@@ -1447,6 +1509,9 @@ async fn pump_task(st: Arc<PeerState>, conn: Connection) {
         Sub(Arc<OutSub>),
     }
     loop {
+        // The turn is taken before the work, so that a direct write (`pump_direct`) never
+        // overtakes work the pump already has in hand.
+        let turn = st.pump.turn.lock().await;
         let work = {
             let mut q = lock(&st.pump.q);
             q.ctrl
@@ -1455,13 +1520,14 @@ async fn pump_task(st: Arc<PeerState>, conn: Connection) {
                 .or_else(|| q.ready.pop_front().map(Work::Sub))
         };
         let Some(work) = work else {
+            drop(turn);
             tokio::select! {
                 () = st.stop.cancelled() => return,
                 () = st.pump.notify.notified() => {}
             }
             continue;
         };
-        let _turn = st.pump.turn.lock().await;
+        let _turn = turn;
         match work {
             Work::Ctrl(b) => {
                 if conn.send_encoded(&b).await.is_err() {

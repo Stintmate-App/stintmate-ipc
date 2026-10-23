@@ -91,3 +91,55 @@ callback. The lead is a direct write from the caller's thread when the writer qu
 empty (the 0.1.4 shape), which the core's writer task does not allow today. The live path
 still converts through `Value` (the core hands decoded trees); `direct.rs` serves `_encode`
 / `_decode`: at 1-2 us per message that is not where the time goes.
+
+## Direct writes and one I/O worker (PRY-085 T7c, 2026-10-23, this PC)
+
+Method: `python/bench/bench.py --high --repeat 5 --scale 0.5 --only rr,event,stream` (every
+process in the HIGH priority class, 200 warm-up calls for rr and a 0.5 s settle for the
+channels, 5 runs, the median of the per-run medians; the per-run values are printed, which is
+the noise figure below). 0.1.4 was re-measured the same day with its own `bench/bench.py`
+and the same priority (a copy with one `SetPriorityClass` line, outside the repository).
+Rust to Rust: `cargo test --release -p stintmate-ipc --test latency -- --ignored --nocapture
+--test-threads 1` (one process, 3000 calls, 1000 events / samples at 200 Hz). The PC was in
+use: single runs still jump (one run in five of event or stream had p50 x2-x7 and a p99 of
+milliseconds in the "before" set); the medians below were stable to +-3 us (p50) and
++-15 us (p99) across repeated sets. CPU is the least stable column (Windows counts process
+time in 15.6 ms ticks; the same build read 0.8 to 2.3 % on the publisher between sets).
+
+| Metric (us; Python to Python unless noted) | T7b (before) | T7c (after) | Target (plan 6) | 0.1.4, same day |
+|---|---|---|---|---|
+| rr p50 / p99 | 56 / 111 | 45 / 91 | <= 45 / <= 100 | 68 / 104 |
+| event 200 Hz p50 (p99) | 84 (205) | 59 (166) | <= 50 | 76 (188) |
+| stream 200 Hz 48 B p50 / p99 | 53 / 126 | 38 / 109 | p99 <= 100 | 57 / 135 |
+| stream CPU publisher / subscriber | 1.35 / 0.63 % | 0.94 / 0.63 % | < 0.5 % per side | 1.04 / 0.83 % |
+| Rust to Rust rr p50 (pool handler) | 40 | 29-34 | | |
+| Rust to Rust event 200 Hz p50 (p99) | 49 (150) | 40 (109) | | |
+| Rust to Rust stream 200 Hz p50 (p99) | 45 (133) | 37-39 (110) | | |
+
+A 30 s stream run with per-thread CPU (`BENCH_THREADS=1`, same build) splits the subscriber's
+0.8 % into the I/O worker (0.4 %) and the callback lane (0.4 %), and the publisher's into its
+own Python loop (sleep, `Layout.pack`, `send`: most of it) and the I/O worker (0.2 %, the
+write completions). A 3 x 30 s set read 2.3 / 1.3 % for T7c and 0.73 / 1.41 % for 0.1.4.
+
+What changed:
+
+- **Direct writes** (core, `connection.rs`): a sender writes its frames to the pipe from its
+  own thread (a non-blocking write) when nothing is queued or being written; otherwise, or
+  for what the pipe does not take at once, the bounded queue and the writer task as before.
+  A counter of queued items, raised under the write lock, keeps one order per connection.
+  The writer task now writes everything queued per wake-up as one write.
+- **Offers written by the publishing thread** (node, `pump_direct`): an event, state value
+  or sample offered while the connection's pump has nothing queued or in hand and the writer
+  is idle is written by the offering thread: no wake-up of the pump task nor of the writer
+  per message. The pump takes its turn before its work, so a direct write never overtakes
+  work the pump holds. `NodeConfig::direct_writes` (default on) turns it off (a test of the
+  owner's queue rules uses that).
+- **One I/O worker** for the blocking façade's runtime (was 2): handlers and callbacks run
+  on their own threads, so the runtime only moves bytes; one worker drops the work-stealing
+  wake-ups between them (rr -2 us, event -4 us p50 in A/B sets).
+
+Still missed: event p50 (59 against 50: the receive side still costs two wake-ups, the I/O
+worker on the pipe's completion and the callback lane; 0.1.4 ran the callback on its reader
+thread) and the stream p99 by about 10 us, which on this PC is scheduling noise (the bare
+pipe's own p99 is 25-50 us). Both are better than 0.1.4 on the same day. The CPU target
+(< 0.5 % per side) is not met by either implementation on this PC; T7c is at 0.1.4's level.
