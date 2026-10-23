@@ -28,7 +28,7 @@ fn callback_queue() -> &'static Sender<PyJob> {
                     if SHUTDOWN.load(Ordering::Acquire) {
                         continue;
                     }
-                    Python::attach(job);
+                    attach(job);
                 }
             })
             .expect("a thread starts");
@@ -60,9 +60,53 @@ pub fn enqueue(job: impl FnOnce(Python<'_>) + Send + 'static) {
     let _ = callback_queue().send(Box::new(job));
 }
 
+/// A Python thread state kept for the life of a library thread, so that each attach only
+/// takes the GIL instead of creating and destroying a thread state (measured: about 10 us per
+/// delivery or handler call).
+struct Pinned {
+    gstate: pyo3::ffi::PyGILState_STATE,
+    saved: *mut pyo3::ffi::PyThreadState,
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        // After shutdown began the interpreter may be gone: leak the thread state then.
+        if !SHUTDOWN.load(Ordering::Acquire) {
+            // SAFETY: the pair of `pin_thread`, on the same thread, in reverse order.
+            unsafe {
+                pyo3::ffi::PyEval_RestoreThread(self.saved);
+                pyo3::ffi::PyGILState_Release(self.gstate);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static PINNED: std::cell::RefCell<Option<Pinned>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Gives this thread a thread state that lives until the thread ends, when it has none (a
+/// thread Python started keeps its own). Called detached, before the first attach.
+fn pin_thread() {
+    PINNED.with(|p| {
+        let mut p = p.borrow_mut();
+        // SAFETY: plain queries and a balanced Ensure/SaveThread pair on this thread; the
+        // interpreter is initialized (this module is loaded) and not shutting down.
+        unsafe {
+            if p.is_some() || !pyo3::ffi::PyGILState_GetThisThreadState().is_null() {
+                return;
+            }
+            let gstate = pyo3::ffi::PyGILState_Ensure();
+            let saved = pyo3::ffi::PyEval_SaveThread();
+            *p = Some(Pinned { gstate, saved });
+        }
+    });
+}
+
 /// Attaches the calling (library) thread and runs `job`, unless the interpreter is going down.
 pub fn attach(job: impl FnOnce(Python<'_>)) {
     if !SHUTDOWN.load(Ordering::Acquire) {
+        pin_thread();
         Python::attach(job);
     }
 }
