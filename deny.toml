@@ -18,6 +18,8 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.9
+# cbindgen writes the C header at build time and is never linked into what we ship.
+exceptions = [{ allow = ["MPL-2.0"], crate = "cbindgen" }]
 
 [advisories]
 version = 2
