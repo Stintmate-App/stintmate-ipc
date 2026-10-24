@@ -281,7 +281,9 @@ fn timeout_then_a_late_answer_is_harmless() {
     rig.go();
 
     let started = Instant::now();
-    let (st, _) = rig.call("t.park", &Value::Nil, 200);
+    // Room for a loaded machine: a request that waits in the pool past its deadline is answered
+    // with the remote `timeout` (SPEC 10.3) instead of reaching the handler.
+    let (st, _) = rig.call("t.park", &Value::Nil, 1000);
     assert_eq!(st, STINTMATE_IPC_E_TIMEOUT);
     assert!(started.elapsed() < Duration::from_secs(3));
     wait_for("the handler to be called", || {
