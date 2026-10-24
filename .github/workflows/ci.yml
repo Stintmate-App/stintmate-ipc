@@ -34,7 +34,11 @@ jobs:
         run: |
           rustup toolchain install
           rustup show active-toolchain
+      # Registry, git checkouts and target only: the runner's rustup proxies in CARGO_HOME\bin are
+      # symlinks, which a job without admin cannot recreate on restore (cargo.exe would be lost).
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # The C ABI DLL the examples link against (cargo test does not build cdylibs).
