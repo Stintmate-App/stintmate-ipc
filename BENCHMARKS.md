@@ -190,3 +190,25 @@ against 38; Rust to Rust event and stream are 8-10 us lower than in T7c, which T
 caveat on a busier PC may explain), so T7d and T7e (0.1.4 semantics, `Peer.closed`, layout)
 cost nothing measurable. Still missed against plan 6: event p50 <= 50 us in the first Rust set
 (56; 46 and 48 in the other two) and the CPU target.
+
+## 0.3.0: Python through the DLL (2026-10-26, this PC)
+
+The ctypes package over `stintmate_ipc.dll`, alternated with v0.2.0 in one session, Python to
+Python, microseconds p50 / p99.
+
+| Metric | 0.3.0 (DLL) | v0.2.0 |
+|---|---|---|
+| rr | 73.3 / 116.9 | 45.6 / 75.5 |
+| event 200 Hz | 102.0 / 202.6 | 57.8 / 135.4 |
+| stream 200 Hz, 48 B | 54.8 / 116.9 | 38.6 / 106.8 |
+
+The wire, the I/O thread, the pool hand-off and the wake are equal within 0.5 us. The
+difference is Python/ctypes marshalling: msgpack in Python, decode and re-encode in the DLL,
+four ctypes crossings. In-process Rust through the C ABI: rr 36 / 69.
+
+Stream CPU at 200 Hz (desk, 6 alternated rounds, median):
+
+| Role | 0.3.0 | v0.2.0 |
+|---|---|---|
+| publisher | 1.56 % | 1.22 % |
+| subscriber | 1.30 % | 0.86 % |
