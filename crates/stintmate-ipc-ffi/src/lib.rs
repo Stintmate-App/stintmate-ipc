@@ -309,7 +309,8 @@ pub unsafe extern "C" fn stintmate_ipc_last_error_message(buf: *mut c_char, len:
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_last_error(out: *mut stintmate_ipc_buffer) -> i32 {
     if out.is_null() {
-        return invalid("out is null");
+        // Not recorded: that would overwrite the very record the caller asked for.
+        return STINTMATE_IPC_E_INVALID_ARG;
     }
     let map = LAST_ERROR
         .try_with(|e| {

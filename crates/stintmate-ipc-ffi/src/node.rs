@@ -24,7 +24,7 @@ use crate::runtime::{
 };
 use crate::{
     STINTMATE_IPC_E_WAIT_TIMEOUT, STINTMATE_IPC_OK, cstr, fail, guard, invalid, opt_cstr,
-    put_value, stintmate_ipc_buffer, value_arg, versions_arg,
+    put_value, record_error, stintmate_ipc_buffer, value_arg, versions_arg,
 };
 
 /// `STINTMATE_IPC_METHOD_ORDERED`: one call at a time per connection, in arrival order.
@@ -636,6 +636,7 @@ pub unsafe extern "C" fn stintmate_ipc_request_wait_cancelled(
         if cancelled {
             STINTMATE_IPC_OK
         } else {
+            record_error(STINTMATE_IPC_E_WAIT_TIMEOUT, "the wait timed out");
             STINTMATE_IPC_E_WAIT_TIMEOUT
         }
     })
@@ -1012,7 +1013,7 @@ pub unsafe extern "C" fn stintmate_ipc_channel_subscribers(ch: *mut stintmate_ip
     // SAFETY: the contract of this function.
     match unsafe { ch.as_ref() } {
         Some(c) => c.subscribers() as i64,
-        None => i64::from(crate::STINTMATE_IPC_E_INTERNAL),
+        None => i64::from(invalid("channel is null")),
     }
 }
 
