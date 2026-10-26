@@ -5,7 +5,7 @@
 //! channels with publish/accept, hooks, peers and declarations work the same on both.
 
 use std::ffi::{c_char, c_void};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded};
@@ -117,11 +117,53 @@ fn ms_duration(ms: i64) -> Option<Duration> {
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_node {
     pub(crate) node: Node,
+    regs: Regs,
 }
 
 impl stintmate_ipc_node {
     pub(crate) fn new(node: Node) -> Self {
-        Self { node }
+        Self {
+            node,
+            regs: Regs::default(),
+        }
+    }
+}
+
+impl Drop for stintmate_ipc_node {
+    /// The owner is freed: the core node (and the handlers in it) may live on in cycles, so the
+    /// registrations are let go here; their `release` runs once the callbacks in flight end.
+    fn drop(&mut self) {
+        self.regs.release_all();
+    }
+}
+
+/// The `user_data` of a method or hook, held by its handler; emptied when the owner is freed.
+struct Cell(Mutex<Option<Arc<Registration>>>);
+
+impl Cell {
+    fn get(&self) -> Option<Arc<Registration>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+/// The registrations of one node (and its channels), to release when its owner is freed.
+#[derive(Clone, Default)]
+struct Regs(Arc<Mutex<Vec<Weak<Cell>>>>);
+
+impl Regs {
+    fn add(&self, user: Arc<Registration>) -> Arc<Cell> {
+        let cell = Arc::new(Cell(Mutex::new(Some(user))));
+        let mut v = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        v.retain(|w| w.strong_count() > 0);
+        v.push(Arc::downgrade(&cell));
+        cell
+    }
+
+    fn release_all(&self) {
+        let v = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
+        for c in v.iter().filter_map(Weak::upgrade) {
+            drop(c.0.lock().unwrap_or_else(|p| p.into_inner()).take());
+        }
     }
 }
 
@@ -305,12 +347,15 @@ pub unsafe extern "C" fn stintmate_ipc_method(
             };
             (n, name, opts)
         };
-        let user = Registration::new(user_data, release);
+        let cell = n.regs.add(Registration::new(user_data, release));
         let r = n
             .node
             .method(name, opts, move |ctx: &Context, params: Value| {
                 let Some(_active) = enter() else {
                     return Err(RemoteError::new("unavailable", "the library was shut down"));
+                };
+                let Some(user) = cell.get() else {
+                    return Err(RemoteError::new("unavailable", "the node was freed"));
                 };
                 let bytes = codec::encode(&params)
                     .map_err(|e| RemoteError::new("internal", e.to_string()))?;
@@ -463,12 +508,12 @@ pub unsafe extern "C" fn stintmate_ipc_on_peer(
             Ok(n) => n,
             Err(s) => return s,
         };
-        let user = Registration::new(user_data, release);
+        let cell = n.regs.add(Registration::new(user_data, release));
         let make = |event: i32| {
-            let user = user.clone();
+            let cell = cell.clone();
             move |peer: blocking::Peer| {
                 let Some(cb) = cb else { return };
-                let user = user.clone();
+                let Some(user) = cell.get() else { return };
                 post_hook(move || {
                     let p = stintmate_ipc_peer::new_ref(peer);
                     // SAFETY: the embedder's callback; `p` lives until it returns.
@@ -734,6 +779,7 @@ enum Kind {
 pub struct stintmate_ipc_channel {
     kind: Kind,
     node: Node,
+    regs: Regs,
     info: Value,
 }
 
@@ -777,6 +823,7 @@ unsafe fn channel_out(
     let ch = stintmate_ipc_channel {
         kind,
         node: n.node.clone(),
+        regs: n.regs.clone(),
         info: codec::map(pairs),
     };
     // SAFETY: `out` is valid for a write.
@@ -1235,11 +1282,14 @@ pub unsafe extern "C" fn stintmate_ipc_on_subscribe(
         let Some(c) = (unsafe { ch.as_ref() }) else {
             return invalid("channel is null");
         };
-        let user = Registration::new(user_data, release);
+        let cell = c.regs.add(Registration::new(user_data, release));
         let hook = move |req: SubscribeRequest| -> Result<(), RemoteError> {
             let Some(cb) = cb else { return Ok(()) };
             let Some(_active) = enter() else {
                 return Err(RemoteError::new("unavailable", "the library was shut down"));
+            };
+            let Some(user) = cell.get() else {
+                return Err(RemoteError::new("unavailable", "the node was freed"));
             };
             let peer = blocking::Peer::from(req.peer);
             let view = codec::map([
@@ -1304,10 +1354,10 @@ pub unsafe extern "C" fn stintmate_ipc_on_active(
         let Some(c) = (unsafe { ch.as_ref() }) else {
             return invalid("channel is null");
         };
-        let user = Registration::new(user_data, release);
+        let cell = c.regs.add(Registration::new(user_data, release));
         let hook = move |active: bool| {
             let Some(cb) = cb else { return };
-            let user = user.clone();
+            let Some(user) = cell.get() else { return };
             post_hook(move || {
                 // SAFETY: the embedder's callback.
                 unsafe { cb(user.user_data(), i32::from(active)) };

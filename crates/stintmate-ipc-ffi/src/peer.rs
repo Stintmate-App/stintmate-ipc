@@ -288,9 +288,7 @@ pub unsafe extern "C" fn stintmate_ipc_peer_free(peer: *mut stintmate_ipc_peer) 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_peer_id(peer: *const stintmate_ipc_peer) -> u64 {
     // SAFETY: the contract of this function.
-    unsafe { peer.as_ref() }.map_or(0, |p| {
-        std::ptr::from_ref(p.peer.inner().connection().info()) as usize as u64
-    })
+    unsafe { peer.as_ref() }.map_or(0, |p| p.peer.inner().id())
 }
 
 /// Who is on the other end: `{app, name, version, process?, meta, pid?, run}`. (Named
