@@ -61,6 +61,54 @@ fn prototypes(header: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// Every typedef of the header (opaque handles, callback signatures, structs with their fields
+/// in order and their types, which fix the layout): `type:<name>` to the declaration with
+/// normalised whitespace and without comments.
+fn typedefs(header: &str) -> BTreeMap<String, String> {
+    let mut text = String::new();
+    let mut rest = header;
+    while let Some(i) = rest.find("/*") {
+        text.push_str(&rest[..i]);
+        match rest[i..].find("*/") {
+            Some(j) => rest = &rest[i + j + 2..],
+            None => rest = "",
+        }
+    }
+    text.push_str(rest);
+    let text: String = text
+        .lines()
+        .map(|l| l.split("//").next().unwrap())
+        .filter(|l| !l.trim_start().starts_with('#') && !l.trim_start().starts_with("extern"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = BTreeMap::new();
+    let (mut depth, mut cur) = (0usize, String::new());
+    for ch in text.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if ch == ';' && depth == 0 {
+            let flat = cur.split_whitespace().collect::<Vec<_>>().join(" ");
+            let flat = flat.trim_start_matches(['}', ' ']).to_owned();
+            cur.clear();
+            if !flat.starts_with("typedef") {
+                continue;
+            }
+            let name = if let Some(i) = flat.find("(*") {
+                flat[i + 2..].split(')').next().unwrap().to_owned()
+            } else {
+                flat.rsplit([' ', '*']).next().unwrap().to_owned()
+            };
+            out.insert(format!("type:{name}"), flat);
+        } else {
+            cur.push(ch);
+        }
+    }
+    out
+}
+
 fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
@@ -142,7 +190,20 @@ fn every_prototype_of_the_header_is_exported_and_matches_the_baseline() {
         );
     }
 
-    let current: BTreeMap<String, u64> = protos.iter().map(|(k, v)| (k.clone(), fnv(v))).collect();
+    let types = typedefs(&h);
+    assert!(types.len() > 30, "parsed only {} typedefs", types.len());
+    for must in [
+        "type:stintmate_ipc_delivery",
+        "type:stintmate_ipc_buffer",
+        "type:stintmate_ipc_log_cb",
+    ] {
+        assert!(types.contains_key(must), "{must} not parsed");
+    }
+    let current: BTreeMap<String, u64> = protos
+        .iter()
+        .chain(types.iter())
+        .map(|(k, v)| (k.clone(), fnv(v)))
+        .collect();
     let (major, minor) = (
         define(&h, "STINTMATE_IPC_ABI_MAJOR"),
         define(&h, "STINTMATE_IPC_ABI_MINOR"),
