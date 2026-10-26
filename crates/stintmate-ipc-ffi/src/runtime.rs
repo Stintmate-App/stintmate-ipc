@@ -228,6 +228,13 @@ fn post_to(slot: &Mutex<Option<Worker>>, name: &str, job: Job) {
         return;
     }
     let mut w = lock(slot);
+    // Shutdown sets its flag before it takes the worker (under this same lock), so a
+    // check here decides: no worker, and no `on_start`, is started after it returned.
+    if is_shutdown() {
+        drop(w);
+        drop(job); // outside the lock: the job's drop may post again
+        return;
+    }
     let w = w.get_or_insert_with(|| spawn_worker(name));
     let _ = w.tx.send(Msg::Run(job));
 }
