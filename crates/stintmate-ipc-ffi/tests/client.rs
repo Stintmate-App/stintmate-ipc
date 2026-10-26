@@ -568,3 +568,61 @@ fn a_reconnect_policy_answering_minus_one_stops_reconnecting_and_sees_the_bye_co
     settle();
     assert_eq!(pr.released.load(Ordering::SeqCst), 1);
 }
+
+/// The client a policy frees from inside itself, and the signal that it came back.
+struct FreeFromPolicy {
+    client: std::sync::atomic::AtomicPtr<std::ffi::c_void>,
+    freed: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicUsize,
+}
+
+unsafe extern "C-unwind" fn policy_that_frees(
+    ud: *mut std::ffi::c_void,
+    _code: *const std::ffi::c_char,
+    _attempt: u32,
+) -> i64 {
+    let st = unsafe { &*ud.cast::<FreeFromPolicy>() };
+    let c = st.client.load(Ordering::SeqCst);
+    unsafe { (p().client_free)(c) };
+    st.freed.store(true, Ordering::SeqCst);
+    100
+}
+
+unsafe extern "C-unwind" fn release_policy_that_frees(ud: *mut std::ffi::c_void) {
+    unsafe { &*ud.cast::<FreeFromPolicy>() }
+        .released
+        .fetch_add(1, Ordering::SeqCst);
+}
+
+#[test]
+fn freeing_the_client_from_inside_its_reconnect_policy_returns() {
+    let _s = serial();
+    let a = p();
+    let (pipe, key) = (random_pipe(), new_key());
+    let c = new_client(&pipe, &key, true);
+    let st: &'static FreeFromPolicy = Box::leak(Box::new(FreeFromPolicy {
+        client: std::sync::atomic::AtomicPtr::new(c),
+        freed: Default::default(),
+        released: Default::default(),
+    }));
+    let ud = std::ptr::from_ref(st).cast_mut().cast();
+    assert_eq!(
+        unsafe {
+            (a.client_set_reconnect_policy)(
+                c,
+                Some(policy_that_frees),
+                ud,
+                Some(release_policy_that_frees),
+            )
+        },
+        0
+    );
+    assert_eq!(unsafe { (a.client_start)(c) }, 0);
+    // Before the fix the free waits for the reconnect task, which waits for the policy.
+    wait_until("the policy freed the client", || {
+        st.freed.load(Ordering::SeqCst)
+    });
+    wait_until("the policy's release", || {
+        st.released.load(Ordering::SeqCst) == 1
+    });
+}
