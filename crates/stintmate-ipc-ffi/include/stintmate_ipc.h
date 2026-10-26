@@ -374,6 +374,16 @@ typedef void (*stintmate_ipc_error_cb)(void *user_data, const uint8_t *error, si
 typedef void (*stintmate_ipc_release_cb)(void *user_data);
 
 /**
+ * Chooses the delay before the next connection attempt (milliseconds; negative: stop
+ * reconnecting). `code` is the `bye` code that ended the last connection or attempt (null:
+ * none), valid only during the call; `attempt` counts the failures in a row. It runs on a
+ * library thread and may block; a panic falls back to the built-in policy.
+ */
+typedef int64_t (*stintmate_ipc_reconnect_policy_cb)(void *user_data,
+                                                     const char *code,
+                                                     uint32_t attempt);
+
+/**
  * A progress callback: the MessagePack of one `prog` message.
  */
 typedef void (*stintmate_ipc_progress_cb)(void *user_data, const uint8_t *data, size_t len);
@@ -817,6 +827,23 @@ int32_t stintmate_ipc_on_connect_error(stintmate_ipc_client *c,
                                        stintmate_ipc_error_cb cb,
                                        void *user_data,
                                        stintmate_ipc_release_cb release);
+
+/**
+ * Sets the policy that chooses the delay before each reconnection attempt, in place of the
+ * built-in one (`stintmate_ipc_reconnect_delay_ms`). `cb` is called with the `bye` code that
+ * ended the last connection or attempt (null: none) and the failures in a row, on a library
+ * thread (it may block); it returns the delay in milliseconds before jitter, or -1 to stop
+ * reconnecting. A panic falls back to the built-in policy. Replaces the previous policy,
+ * releasing its `user_data`; a null `cb` restores the built-in policy. `release` runs once,
+ * when the policy is replaced or the client is freed.
+ *
+ * # Safety
+ * `c` live; `cb` and `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_client_set_reconnect_policy(stintmate_ipc_client *c,
+                                                  stintmate_ipc_reconnect_policy_cb cb,
+                                                  void *user_data,
+                                                  stintmate_ipc_release_cb release);
 
 /**
  * Stops reconnecting and closes the connection; the handle stays valid until

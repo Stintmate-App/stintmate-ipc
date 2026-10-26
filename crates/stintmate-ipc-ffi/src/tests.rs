@@ -657,3 +657,38 @@ fn ten_thousand_calls_leak_no_buffers() {
     }
     assert_eq!(stintmate_ipc_live_buffers(), before);
 }
+
+#[test]
+fn handshake_errors_carry_their_code_in_the_record_and_the_error_map() {
+    use stintmate_ipc::handshake::HandshakeFailure;
+    let cases: [(Error, &str); 3] = [
+        (
+            Error::Handshake(HandshakeFailure::unavailable("no key")),
+            "unavailable",
+        ),
+        (
+            Error::Handshake(HandshakeFailure::from(
+                stintmate_ipc::error::ProtocolError::BadField {
+                    message: "auth".into(),
+                    field: "mac",
+                    expected: "bin",
+                },
+            )),
+            "protocol_error",
+        ),
+        (Error::HandshakeTimeout, "timeout"),
+    ];
+    for (e, code) in cases {
+        assert_eq!(fail(&e), STINTMATE_IPC_E_HANDSHAKE);
+        assert_eq!(
+            codec::get(&last_error_map(), "code").and_then(|v| v.as_str()),
+            Some(code)
+        );
+        let m = error_map(&e);
+        assert_eq!(codec::get(&m, "code").and_then(|v| v.as_str()), Some(code));
+        assert_eq!(
+            codec::get(&m, "status").and_then(|v| v.as_i64()),
+            Some(i64::from(STINTMATE_IPC_E_HANDSHAKE))
+        );
+    }
+}

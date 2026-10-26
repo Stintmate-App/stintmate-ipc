@@ -21,6 +21,7 @@ client_last_error 5acdcff5b0d625e5
 client_new 62cbaf4e84fb16b2
 client_node 6d0499d471a523fb
 client_peer 3257d55433686dd6
+client_set_reconnect_policy 628cfd0081c722a1
 client_start 2ae75e75e72ba427
 client_subscribe 4feac347c8cedd54
 client_wait_connected 0dd2a38a5961c300

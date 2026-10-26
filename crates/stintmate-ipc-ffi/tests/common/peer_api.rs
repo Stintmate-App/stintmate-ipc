@@ -27,6 +27,7 @@ pub type EndCb = Option<
     ),
 >;
 pub type ErrorCb = Option<unsafe extern "C-unwind" fn(*mut c_void, *const u8, usize)>;
+pub type PolicyCb = Option<unsafe extern "C-unwind" fn(*mut c_void, *const c_char, u32) -> i64>;
 
 pub const OK: i32 = 0;
 pub const E_NOT_FOUND: i32 = -1;
@@ -170,6 +171,7 @@ papi! {
     fn client_peer(c: *mut c_void, out: *mut *mut c_void) -> i32;
     fn client_last_error(c: *mut c_void, out: *mut Buffer) -> i32;
     fn on_connect_error(c: *mut c_void, cb: ErrorCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
+    fn client_set_reconnect_policy(c: *mut c_void, cb: PolicyCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
     fn client_close(c: *mut c_void) -> i32;
     fn client_free(c: *mut c_void);
     fn reconnect_delay_ms(code: *const c_char, attempt: u32) -> i64;
