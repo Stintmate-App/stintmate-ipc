@@ -1,7 +1,7 @@
 //! The client side of the C ABI (spec 2.7): the client that stays connected, its calls and
 //! subscriptions, `connect` and the reconnection hooks.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::{offset_of, size_of_val};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -18,7 +18,7 @@ use crate::peer::{
     stintmate_ipc_call_opts, stintmate_ipc_peer, stintmate_ipc_pending,
     stintmate_ipc_subscribe_opts, stintmate_ipc_subscription, subscribe_setup, wait_arg,
 };
-use crate::runtime::{Handle, Registration, post_hook, stintmate_ipc_release_cb};
+use crate::runtime::{Handle, Registration, enter, post_hook, stintmate_ipc_release_cb};
 use crate::{
     STINTMATE_IPC_E_NOT_CONNECTED, STINTMATE_IPC_OK, cstr, guard, invalid, opt_cstr, put_value,
     record_error, stintmate_ipc_buffer, value_arg,
@@ -82,11 +82,24 @@ type ErrorHook = (
     Arc<Registration>,
 );
 
+/// Chooses the delay before the next connection attempt (milliseconds; negative: stop
+/// reconnecting). `code` is the `bye` code that ended the last connection or attempt (null:
+/// none), valid only during the call; `attempt` counts the failures in a row. It runs on a
+/// library thread and may block; a panic falls back to the built-in policy.
+#[allow(non_camel_case_types)]
+pub type stintmate_ipc_reconnect_policy_cb = Option<
+    unsafe extern "C-unwind" fn(user_data: *mut c_void, code: *const c_char, attempt: u32) -> i64,
+>;
+
+type PolicyFn = unsafe extern "C-unwind" fn(*mut c_void, *const c_char, u32) -> i64;
+type PolicyHook = (PolicyFn, Arc<Registration>);
+
 /// What the connection attempts leave behind: the last error and the caller's hook.
 #[derive(Default)]
 pub(crate) struct ClientShared {
     last: Mutex<Option<ErrInfo>>,
     hook: Mutex<Option<ErrorHook>>,
+    policy: Mutex<Option<PolicyHook>>,
     reconnect: bool,
 }
 
@@ -111,6 +124,30 @@ pub struct stintmate_ipc_client_opts {
     pub event_queue: usize,
 }
 
+/// The delay the caller's policy chooses, or the built-in one when there is none (or it panics
+/// or the library shuts down). `None`: stop reconnecting.
+fn chosen_delay(shared: &ClientShared, code: Option<&str>, attempt: u32) -> Option<Duration> {
+    let fallback = || stintmate_ipc::client::reconnect_delay(code, attempt);
+    let Some((cb, reg)) = lock(&shared.policy).clone() else {
+        return fallback();
+    };
+    let Some(_active) = enter() else {
+        return fallback();
+    };
+    let c = match code.map(CString::new).transpose() {
+        Ok(c) => c,
+        Err(_) => return fallback(),
+    };
+    let ptr = c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    // SAFETY: the caller's callback; `reg` keeps its `user_data` alive, `ptr` outlives the call.
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        cb(reg.user_data(), ptr, attempt)
+    })) {
+        Ok(ms) => u64::try_from(ms).ok().map(Duration::from_millis),
+        Err(_) => fallback(),
+    }
+}
+
 /// Builds a client and wires its error bookkeeping.
 fn build_client(
     pipe: &str,
@@ -124,7 +161,14 @@ fn build_client(
         ..ClientShared::default()
     });
     let eq = if event_queue == 0 { 1024 } else { event_queue };
-    let client = Client::with(pipe, info, key, |b| b.reconnect(reconnect).event_queue(eq))?;
+    let sp = shared.clone();
+    let client = Client::with(pipe, info, key, |b| {
+        b.reconnect(reconnect)
+            .event_queue(eq)
+            .reconnect_policy(Arc::new(move |code, attempt| {
+                chosen_delay(&sp, code, attempt)
+            }))
+    })?;
     let s = shared.clone();
     client.on_connect_error(move |e: &Error| {
         let info = ErrInfo::of(e);
@@ -385,6 +429,33 @@ pub unsafe extern "C" fn stintmate_ipc_on_connect_error(
         // SAFETY: the contract of this function.
         let c = unsafe { client_of(c) }?;
         let old = std::mem::replace(&mut *lock(&c.2.hook), cb.map(|cb| (cb, reg)));
+        drop(old);
+        Ok(())
+    })
+}
+
+/// Sets the policy that chooses the delay before each reconnection attempt, in place of the
+/// built-in one (`stintmate_ipc_reconnect_delay_ms`). `cb` is called with the `bye` code that
+/// ended the last connection or attempt (null: none) and the failures in a row, on a library
+/// thread (it may block); it returns the delay in milliseconds before jitter, or -1 to stop
+/// reconnecting. A panic falls back to the built-in policy. Replaces the previous policy,
+/// releasing its `user_data`; a null `cb` restores the built-in policy. `release` runs once,
+/// when the policy is replaced or the client is freed.
+///
+/// # Safety
+/// `c` live; `cb` and `user_data` usable from library threads until released.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stintmate_ipc_client_set_reconnect_policy(
+    c: *mut stintmate_ipc_client,
+    cb: stintmate_ipc_reconnect_policy_cb,
+    user_data: *mut c_void,
+    release: stintmate_ipc_release_cb,
+) -> i32 {
+    run(|| {
+        let reg = Registration::new(user_data, release);
+        // SAFETY: the contract of this function.
+        let c = unsafe { client_of(c) }?;
+        let old = std::mem::replace(&mut *lock(&c.2.policy), cb.map(|cb| (cb, reg)));
         drop(old);
         Ok(())
     })

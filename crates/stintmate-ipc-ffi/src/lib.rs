@@ -208,6 +208,11 @@ pub(crate) fn fail(e: &Error) -> i32 {
             rec.data.clone_from(&r.details);
             rec.retry_ms = r.retry_ms;
         }
+        Error::Handshake(f) => {
+            rec.message.clone_from(&f.message);
+            rec.code = Some(f.code.as_str().to_owned());
+        }
+        Error::HandshakeTimeout => rec.code = Some("timeout".to_owned()),
         Error::PeerBye { code, .. } => rec.code = Some(code.clone()),
         Error::ConnectionLost { code, .. } => rec.code.clone_from(code),
         Error::Io(io) => rec.os_error = io.raw_os_error(),

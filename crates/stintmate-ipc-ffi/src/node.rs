@@ -87,6 +87,11 @@ pub(crate) fn error_map(e: &Error) -> Value {
                 pairs.push(("retry_ms", Value::from(ms)));
             }
         }
+        Error::Handshake(f) => {
+            pairs[1].1 = Value::from(f.message.as_str());
+            pairs.push(("code", Value::from(f.code.as_str())));
+        }
+        Error::HandshakeTimeout => pairs.push(("code", Value::from("timeout"))),
         Error::PeerBye { code, .. } => pairs.push(("code", Value::from(code.as_str()))),
         Error::ConnectionLost {
             code: Some(code), ..

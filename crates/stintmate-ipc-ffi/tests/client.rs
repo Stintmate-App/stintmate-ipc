@@ -9,6 +9,7 @@ mod papi;
 mod server;
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use common::{NO_BUFFER, serial};
 use papi::*;
@@ -437,4 +438,133 @@ fn connect_failures_carry_the_attempts_own_error() {
     );
     srv.ep.stop();
     settle();
+}
+
+/// What a test's reconnect policy saw and what it answers.
+struct PolicyProbe {
+    calls: std::sync::Mutex<Vec<(Option<String>, u32, std::time::Instant)>>,
+    delay_ms: i64,
+    released: std::sync::atomic::AtomicUsize,
+}
+
+impl PolicyProbe {
+    fn leak(delay_ms: i64) -> &'static PolicyProbe {
+        Box::leak(Box::new(PolicyProbe {
+            calls: Default::default(),
+            delay_ms,
+            released: Default::default(),
+        }))
+    }
+    fn ptr(&'static self) -> *mut std::ffi::c_void {
+        std::ptr::from_ref(self).cast_mut().cast()
+    }
+    fn n(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+unsafe extern "C-unwind" fn policy(
+    ud: *mut std::ffi::c_void,
+    code: *const std::ffi::c_char,
+    attempt: u32,
+) -> i64 {
+    let pr = unsafe { &*ud.cast::<PolicyProbe>() };
+    let code = (!code.is_null()).then(|| {
+        unsafe { std::ffi::CStr::from_ptr(code) }
+            .to_string_lossy()
+            .into_owned()
+    });
+    pr.calls
+        .lock()
+        .unwrap()
+        .push((code, attempt, std::time::Instant::now()));
+    pr.delay_ms
+}
+
+unsafe extern "C-unwind" fn release_policy(ud: *mut std::ffi::c_void) {
+    unsafe { &*ud.cast::<PolicyProbe>() }
+        .released
+        .fetch_add(1, Ordering::SeqCst);
+}
+
+#[test]
+fn a_reconnect_policy_is_called_with_increasing_attempts_and_its_delay_is_honoured() {
+    let _s = serial();
+    let a = p();
+    let (pipe, key) = (random_pipe(), new_key());
+    let c = new_client(&pipe, &key, true);
+    let pr = PolicyProbe::leak(150);
+    assert_eq!(
+        unsafe { (a.client_set_reconnect_policy)(c, Some(policy), pr.ptr(), Some(release_policy)) },
+        0
+    );
+    assert_eq!(unsafe { (a.client_start)(c) }, 0);
+    wait_until("four policy calls", || pr.n() >= 4);
+    {
+        let calls = pr.calls.lock().unwrap();
+        for (i, (code, attempt, _)) in calls.iter().take(4).enumerate() {
+            assert_eq!(*attempt, i as u32);
+            assert_eq!(*code, None, "nobody serves the pipe: no bye code");
+        }
+        // 150 ms with -20 % jitter at the least; the built-in policy would wait 250..2000 ms
+        // growing, so also check the upper side stays near the answer.
+        for w in calls.windows(2).take(3) {
+            let gap = w[1].2 - w[0].2;
+            assert!(gap >= Duration::from_millis(110), "{gap:?}");
+            assert!(gap < Duration::from_millis(600), "{gap:?}");
+        }
+    }
+    // Replacing the policy with the built-in one releases the first once.
+    assert_eq!(
+        unsafe { (a.client_set_reconnect_policy)(c, None, std::ptr::null_mut(), None) },
+        0
+    );
+    wait_until("the release", || pr.released.load(Ordering::SeqCst) == 1);
+    unsafe { (a.client_free)(c) };
+    settle();
+    assert_eq!(pr.released.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_reconnect_policy_answering_minus_one_stops_reconnecting_and_sees_the_bye_code() {
+    let _s = serial();
+    let a = p();
+    let (pipe, key) = (random_pipe(), new_key());
+    // A server with another key: every handshake fails with `unauthorized`.
+    let srv = Server::start(&pipe, new_key());
+    let c = new_client(&pipe, &key, true);
+    let ec = Probe::leak();
+    assert_eq!(
+        unsafe { (a.on_connect_error)(c, Some(on_error), ec.ptr(), Some(release)) },
+        0
+    );
+    let pr = PolicyProbe::leak(-1);
+    assert_eq!(
+        unsafe { (a.client_set_reconnect_policy)(c, Some(policy), pr.ptr(), Some(release_policy)) },
+        0
+    );
+    assert_eq!(unsafe { (a.client_start)(c) }, 0);
+    wait_until("the policy call", || pr.n() >= 1);
+    {
+        let calls = pr.calls.lock().unwrap();
+        assert_eq!(calls[0].0.as_deref(), Some("unauthorized"));
+        assert_eq!(calls[0].1, 0);
+    }
+    // The error map of the attempt carries the code too.
+    wait_until("the error hook", || ec.errors.load(Ordering::SeqCst) >= 1);
+    let e = codec::decode(&ec.last.lock().unwrap()).unwrap();
+    assert_eq!(get_str(&e, "code").as_deref(), Some("unauthorized"));
+    let mut b = NO_BUFFER;
+    assert_eq!(unsafe { (a.client_last_error)(c, &mut b) }, 0);
+    assert_eq!(get_str(&value(b), "code").as_deref(), Some("unauthorized"));
+    // No further attempt, however long we wait (the built-in delay would be 10 s; -1 stops).
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(pr.n(), 1);
+    assert_eq!(ec.errors.load(Ordering::SeqCst), 1);
+    assert_eq!(unsafe { (a.client_is_connected)(c) }, 0);
+    unsafe { (a.client_free)(c) };
+    srv.ep.stop();
+    wait_until("the release", || pr.released.load(Ordering::SeqCst) == 1);
+    settle();
+    assert_eq!(pr.released.load(Ordering::SeqCst), 1);
 }

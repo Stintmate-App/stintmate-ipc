@@ -91,8 +91,9 @@ fn a_short_options_struct_takes_defaults_and_bad_options_fail() {
 unsafe extern "C-unwind" fn failed(user: *mut c_void, pid: i64, err: *const u8, len: usize) {
     let v = codec::decode(unsafe { std::slice::from_raw_parts(err, len) }).unwrap();
     unsafe { log(user) }.push(format!(
-        "failed:{}:{}",
+        "failed:{}:{}:{}",
         key_of(&v, "status").as_i64().unwrap(),
+        key_of(&v, "code").as_str().unwrap_or("none"),
         pid > 0
     ));
 }
@@ -116,7 +117,9 @@ fn the_handshake_failed_hook_reports_a_client_with_the_wrong_key() {
     .unwrap();
     wrong.start();
     wait_for("the report", || {
-        l.lines().iter().any(|s| s.starts_with("failed:-4:"))
+        l.lines()
+            .iter()
+            .any(|s| s.starts_with("failed:-4:unauthorized:"))
     });
     wrong.close();
 
