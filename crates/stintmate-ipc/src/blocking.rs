@@ -426,20 +426,59 @@ pub struct PendingCall {
     id: u64,
     rx: Receiver<Result<Value, Error>>,
     done: Mutex<Option<Result<Value, Error>>>,
+    hooks: Arc<DoneHooks>,
+}
+
+type DoneHook = Box<dyn FnOnce() + Send>;
+
+/// What runs when a call ends (see [`PendingCall::on_done`]).
+#[derive(Default)]
+struct DoneHooks {
+    state: Mutex<(bool, Vec<DoneHook>)>,
+}
+
+impl DoneHooks {
+    fn finish(&self) {
+        let list = {
+            let mut s = lock(&self.state);
+            s.0 = true;
+            std::mem::take(&mut s.1)
+        };
+        for f in list {
+            f();
+        }
+    }
 }
 
 impl PendingCall {
     fn new(pending: crate::connection::PendingCall) -> Self {
         let (handle, id) = (pending.handle(), pending.id());
         let (tx, rx) = crossbeam_channel::bounded(1);
+        let hooks = Arc::new(DoneHooks::default());
+        let task_hooks = hooks.clone();
         runtime().spawn(async move {
             let _ = tx.send(pending.await);
+            task_hooks.finish();
         });
         Self {
             handle,
             id,
             rx,
             done: Mutex::new(None),
+            hooks,
+        }
+    }
+
+    /// Runs `f` once when the call has ended and its result can be read (at once, on the
+    /// calling thread, when it already has). Otherwise `f` runs on a runtime thread: it must
+    /// not block (hand the work to another thread).
+    pub fn on_done(&self, f: impl FnOnce() + Send + 'static) {
+        let mut s = lock(&self.hooks.state);
+        if s.0 {
+            drop(s);
+            f();
+        } else {
+            s.1.push(Box::new(f));
         }
     }
 

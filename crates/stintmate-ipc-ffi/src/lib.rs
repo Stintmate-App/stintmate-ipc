@@ -37,6 +37,7 @@ mod client;
 mod endpoint;
 mod keys;
 mod node;
+mod peer;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -214,6 +215,26 @@ pub(crate) fn fail(e: &Error) -> i32 {
     }
     let _ = LAST_ERROR.try_with(|l| *l.borrow_mut() = rec);
     status
+}
+
+/// Records a failure with all its details (the peer and client code keep errors as data).
+pub(crate) fn record_detail(
+    status: i32,
+    message: String,
+    code: Option<String>,
+    data: Option<Value>,
+    retry_ms: Option<u64>,
+    os_error: Option<i32>,
+) {
+    let rec = ErrorRecord {
+        status,
+        message,
+        code,
+        data,
+        retry_ms,
+        os_error,
+    };
+    let _ = LAST_ERROR.try_with(|l| *l.borrow_mut() = rec);
 }
 
 /// Records an invalid argument.

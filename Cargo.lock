@@ -919,6 +919,7 @@ dependencies = [
  "cbindgen",
  "crossbeam-channel",
  "stintmate-ipc",
+ "stintmate-ipc-check",
  "tracing",
  "windows-sys",
 ]

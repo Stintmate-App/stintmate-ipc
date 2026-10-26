@@ -32,7 +32,7 @@ public static class Echo
             return 1;
         }
         Native.stintmate_ipc_client_start(client);
-        if (Native.stintmate_ipc_client_wait_connected(client, 5000) != Native.Ok)
+        if (Native.stintmate_ipc_client_wait_connected(client, 5000, IntPtr.Zero) != Native.Ok)
         {
             Console.Error.WriteLine("wait_connected failed: " + Native.LastError());
             Native.stintmate_ipc_client_free(client);
@@ -42,7 +42,7 @@ public static class Echo
         // MessagePack fixstr "hello".
         byte[] pars = new byte[] { 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
         Stintmate.Ipc.Buffer result;
-        int status = Native.stintmate_ipc_call(client, Native.Utf8("t.echo"), 1, pars, (UIntPtr)pars.Length, 2000, out result);
+        int status = Native.stintmate_ipc_client_call(client, Native.Utf8("t.echo"), pars, (UIntPtr)pars.Length, IntPtr.Zero, out result);
         bool ok = false;
         if (status == Native.Ok && (int)result.Len == pars.Length)
         {

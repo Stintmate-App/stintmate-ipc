@@ -194,7 +194,7 @@ fn provoke_a_log(rig: &Rig) {
         0
     );
     unsafe { (a.client_start)(intruder) };
-    let _ = unsafe { (a.client_wait_connected)(intruder, 1500) };
+    let _ = unsafe { (a.client_wait_connected)(intruder, 1500, std::ptr::null_mut()) };
     unsafe { (a.client_free)(intruder) };
 }
 

@@ -88,13 +88,12 @@ fn shutdown_waits_for_running_callbacks_and_nothing_runs_after_it() {
     let caller = std::thread::spawn(move || {
         let mut out = NO_BUFFER;
         let st = unsafe {
-            (api().call)(
+            (api().client_call)(
                 client as *mut c_void,
                 c"t.slow".as_ptr(),
-                1,
                 std::ptr::null(),
                 0,
-                10_000,
+                &call_opts(10_000),
                 &mut out,
             )
         };

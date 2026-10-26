@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     stintmate_ipc_client_start(client);
-    if (stintmate_ipc_client_wait_connected(client, 5000) != STINTMATE_IPC_OK) {
+    if (stintmate_ipc_client_wait_connected(client, 5000, NULL) != STINTMATE_IPC_OK) {
         print_last_error("wait_connected");
         stintmate_ipc_client_free(client);
         return 1;
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
 
     const uint8_t params[] = {0xa5, 'h', 'e', 'l', 'l', 'o'};
     stintmate_ipc_buffer result = {0};
-    int32_t status = stintmate_ipc_call(client, "t.echo", 1, params, sizeof params, 2000, &result);
+    int32_t status = stintmate_ipc_client_call(client, "t.echo", params, sizeof params, NULL, &result);
     int ok = status == STINTMATE_IPC_OK && result.len == sizeof params &&
              memcmp(result.ptr, params, sizeof params) == 0;
     if (status != STINTMATE_IPC_OK) {

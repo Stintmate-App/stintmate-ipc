@@ -18,6 +18,7 @@ use stintmate_ipc::codec::{self, Value};
 use stintmate_ipc::error::{Error, RemoteError};
 use stintmate_ipc::layout::Layout;
 
+use crate::peer::stintmate_ipc_peer;
 use crate::runtime::{
     Handle, Registration, count_handle, enter, post_hook, stintmate_ipc_release_cb, uncount_handle,
 };
@@ -127,31 +128,6 @@ impl stintmate_ipc_node {
 unsafe fn node_ref<'a>(node: *mut stintmate_ipc_node) -> Result<&'a stintmate_ipc_node, i32> {
     // SAFETY: the contract of the callers.
     unsafe { node.as_ref() }.ok_or_else(|| invalid("node is null"))
-}
-
-/// One connection of a node. The peer functions (reference counting, calls, subscriptions)
-/// are in `peer.rs`; this is the handle the node's hooks and requests hand out.
-#[allow(non_camel_case_types)]
-pub struct stintmate_ipc_peer(
-    #[allow(dead_code)] pub(crate) blocking::Peer,
-    #[allow(dead_code)] Handle,
-);
-
-/// Wraps a connection in an owned handle.
-pub(crate) fn new_peer(p: blocking::Peer) -> *mut stintmate_ipc_peer {
-    Box::into_raw(Box::new(stintmate_ipc_peer(p, Handle::new())))
-}
-
-/// Releases a peer handle.
-///
-/// # Safety
-/// `peer` from the library, not used afterwards; null is ignored.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stintmate_ipc_peer_free(peer: *mut stintmate_ipc_peer) {
-    if !peer.is_null() {
-        // SAFETY: made by `Box::into_raw` in `new_peer`.
-        drop(unsafe { Box::from_raw(peer) });
-    }
 }
 
 // ------------------------------------------------------------------------ methods
@@ -453,7 +429,7 @@ pub unsafe extern "C" fn stintmate_ipc_peers(
         let peers = n.node.peers();
         for (i, p) in peers.iter().take(cap).enumerate() {
             // SAFETY: `i < cap`.
-            unsafe { out.add(i).write(new_peer(p.clone())) };
+            unsafe { out.add(i).write(stintmate_ipc_peer::new_ref(p.clone())) };
         }
         // SAFETY: `count` is valid for a write.
         unsafe { count.write(peers.len()) };
@@ -494,10 +470,10 @@ pub unsafe extern "C" fn stintmate_ipc_on_peer(
                 let Some(cb) = cb else { return };
                 let user = user.clone();
                 post_hook(move || {
-                    let p = new_peer(peer);
+                    let p = stintmate_ipc_peer::new_ref(peer);
                     // SAFETY: the embedder's callback; `p` lives until it returns.
                     unsafe { cb(user.user_data(), event, p) };
-                    // SAFETY: made by `new_peer` just above (borrowed by the callback).
+                    // SAFETY: made by `new_ref` just above (borrowed by the callback).
                     drop(unsafe { Box::from_raw(p) });
                 });
             }
@@ -556,7 +532,7 @@ pub unsafe extern "C" fn stintmate_ipc_request_peer(
 ) -> *mut stintmate_ipc_peer {
     // SAFETY: the contract of this function.
     match unsafe { req.as_ref() } {
-        Some(r) => new_peer(blocking::Peer::from(r.0.ctx.peer().clone())),
+        Some(r) => stintmate_ipc_peer::new_ref(blocking::Peer::from(r.0.ctx.peer().clone())),
         None => std::ptr::null_mut(),
     }
 }
@@ -1277,7 +1253,7 @@ pub unsafe extern "C" fn stintmate_ipc_on_subscribe(
             let ctx = stintmate_ipc_hook_ctx {
                 refusal: Mutex::new(None),
             };
-            let p = new_peer(peer);
+            let p = stintmate_ipc_peer::new_ref(peer);
             // SAFETY: the embedder's callback; `ctx`, `p` and `bytes` outlive the call.
             let rc = unsafe {
                 cb(
@@ -1288,7 +1264,7 @@ pub unsafe extern "C" fn stintmate_ipc_on_subscribe(
                     bytes.len(),
                 )
             };
-            // SAFETY: made by `new_peer` just above (borrowed by the callback).
+            // SAFETY: made by `new_ref` just above (borrowed by the callback).
             drop(unsafe { Box::from_raw(p) });
             if rc == 0 {
                 return Ok(());
@@ -1372,7 +1348,7 @@ pub unsafe extern "C" fn stintmate_ipc_client_node(
 ) -> *mut stintmate_ipc_node {
     // SAFETY: the contract of this function.
     match unsafe { client.as_ref() } {
-        Some(c) => std::ptr::from_ref(&c.2).cast_mut(),
+        Some(c) => std::ptr::from_ref(&c.3).cast_mut(),
         None => std::ptr::null_mut(),
     }
 }

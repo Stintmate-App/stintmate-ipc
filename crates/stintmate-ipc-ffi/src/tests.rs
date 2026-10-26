@@ -14,6 +14,7 @@ use crate::client::*;
 use crate::endpoint::*;
 use crate::keys::*;
 use crate::node::*;
+use crate::peer::*;
 use crate::*;
 
 /// The buffer counter is global: tests that count run one at a time.
@@ -25,6 +26,22 @@ fn serial() -> MutexGuard<'static, ()> {
 
 fn c(s: &str) -> CString {
     CString::new(s).unwrap()
+}
+
+fn call_opts(timeout_ms: u32) -> stintmate_ipc_call_opts {
+    stintmate_ipc_call_opts {
+        struct_size: size_of::<stintmate_ipc_call_opts>(),
+        version: 1,
+        timeout_ms: if timeout_ms == 0 {
+            -1
+        } else {
+            i64::from(timeout_ms)
+        },
+        idempotency_key: std::ptr::null(),
+        on_progress: None,
+        user_data: std::ptr::null_mut(),
+        release: None,
+    }
 }
 
 fn mp(v: &Value) -> Vec<u8> {
@@ -149,7 +166,7 @@ impl Rig {
         );
         assert_eq!(unsafe { stintmate_ipc_client_start(self.client) }, 0);
         assert_eq!(
-            unsafe { stintmate_ipc_client_wait_connected(self.client, 5000) },
+            unsafe { stintmate_ipc_client_wait_connected(self.client, 5000, std::ptr::null_mut()) },
             0
         );
     }
@@ -159,13 +176,12 @@ impl Rig {
         let p = mp(params);
         let mut out = empty();
         let st = unsafe {
-            stintmate_ipc_call(
+            stintmate_ipc_client_call(
                 self.client,
                 m.as_ptr(),
-                1,
                 p.as_ptr(),
                 p.len(),
-                timeout_ms,
+                &call_opts(timeout_ms),
                 &mut out,
             )
         };
@@ -294,7 +310,7 @@ fn invalid_arguments_are_statuses_not_crashes() {
     assert_eq!(st, STINTMATE_IPC_E_INVALID_ARG);
     assert!(last_error().contains("pipe"));
     assert_eq!(
-        unsafe { stintmate_ipc_call_cancel(std::ptr::null_mut()) },
+        unsafe { stintmate_ipc_call_cancel(std::ptr::null_mut(), std::ptr::null()) },
         STINTMATE_IPC_E_INVALID_ARG
     );
     unsafe { stintmate_ipc_free_buffer(empty()) };
@@ -362,7 +378,14 @@ fn cancel_and_wait() {
     let mut call = std::ptr::null_mut();
     assert_eq!(
         unsafe {
-            stintmate_ipc_call_async(rig.client, m.as_ptr(), 1, std::ptr::null(), 0, 0, &mut call)
+            stintmate_ipc_client_call_async(
+                rig.client,
+                m.as_ptr(),
+                std::ptr::null(),
+                0,
+                &call_opts(0),
+                &mut call,
+            )
         },
         0
     );
@@ -371,9 +394,12 @@ fn cancel_and_wait() {
         unsafe { stintmate_ipc_call_wait(call, 100, &mut out) },
         STINTMATE_IPC_E_WAIT_TIMEOUT
     );
-    assert_eq!(unsafe { stintmate_ipc_call_cancel(call) }, 1);
     assert_eq!(
-        unsafe { stintmate_ipc_call_wait(call, u32::MAX, &mut out) },
+        unsafe { stintmate_ipc_call_cancel(call, std::ptr::null()) },
+        1
+    );
+    assert_eq!(
+        unsafe { stintmate_ipc_call_wait(call, -1, &mut out) },
         STINTMATE_IPC_E_CANCELLED
     );
     unsafe { stintmate_ipc_call_free(call) };
@@ -393,22 +419,18 @@ fn cancel_and_wait() {
     let p = mp(&text("hi"));
     assert_eq!(
         unsafe {
-            stintmate_ipc_call_async(
+            stintmate_ipc_client_call_async(
                 rig.client,
                 m.as_ptr(),
-                1,
                 p.as_ptr(),
                 p.len(),
-                2000,
+                &call_opts(2000),
                 &mut call,
             )
         },
         0
     );
-    assert_eq!(
-        unsafe { stintmate_ipc_call_wait(call, u32::MAX, &mut out) },
-        0
-    );
+    assert_eq!(unsafe { stintmate_ipc_call_wait(call, -1, &mut out) }, 0);
     assert_eq!(codec::decode(&take(out)).unwrap(), text("hi"));
     unsafe { stintmate_ipc_call_free(call) };
 }
@@ -436,16 +458,20 @@ fn subscribe(rig: &Rig, channel: &str, col: &Collector) -> *mut stintmate_ipc_su
     let ch = c(channel);
     let mut sub = std::ptr::null_mut();
     let st = unsafe {
-        stintmate_ipc_subscribe(
+        stintmate_ipc_client_subscribe(
             rig.client,
             ch.as_ptr(),
-            1,
-            std::ptr::null(),
-            0,
-            Some(collect),
-            None,
-            col as *const _ as *mut c_void,
-            None,
+            &stintmate_ipc_subscribe_opts {
+                struct_size: size_of::<stintmate_ipc_subscribe_opts>(),
+                version: 1,
+                options: std::ptr::null(),
+                options_len: 0,
+                timeout_ms: 5000,
+                on_delivery: Some(collect),
+                on_end: None,
+                user_data: col as *const _ as *mut c_void,
+                release: None,
+            },
             &mut sub,
         )
     };
