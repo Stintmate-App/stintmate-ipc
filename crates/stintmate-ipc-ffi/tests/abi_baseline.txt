@@ -1,4 +1,4 @@
-abi 1.0 unreleased
+abi 1.0 released
 abi_version 1d930f20452383aa
 call_cancel 4de4d0c2b1e60c90
 call_free a3ed5364d45ae38a
