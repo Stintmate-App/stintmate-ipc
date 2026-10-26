@@ -10,12 +10,13 @@ use stintmate_ipc::codec::Value;
 use stintmate_ipc::connection::CallOptions;
 use stintmate_ipc::error::Error;
 use stintmate_ipc::handshake::PeerInfo;
-use stintmate_ipc::keyfile::{KeyFile, KeySource, default_key_path};
 use stintmate_ipc::{Delivery, SubscribeOptions, SubscriptionHandle};
 
+use crate::keys::{key_source_arg, stintmate_ipc_key_source};
+use crate::runtime::{Handle, Registration, enter, stintmate_ipc_release_cb};
 use crate::{
-    STINTMATE_IPC_E_INTERNAL, STINTMATE_IPC_E_WAIT_TIMEOUT, STINTMATE_IPC_OK, UserData, cstr, fail,
-    guard, invalid, opt_cstr, put_value, stintmate_ipc_buffer, value_arg,
+    STINTMATE_IPC_E_INTERNAL, STINTMATE_IPC_E_WAIT_TIMEOUT, STINTMATE_IPC_OK, cstr, fail, guard,
+    invalid, opt_cstr, put_value, stintmate_ipc_buffer, value_arg,
 };
 
 /// Who this process is, announced in the handshake.
@@ -62,31 +63,29 @@ pub(crate) unsafe fn peer_info_arg(info: *const stintmate_ipc_peer_info) -> Resu
     }
 }
 
-/// The key source: the file at `key_path`, or the default key file when null.
-///
-/// # Safety
-/// `key_path` must be null or NUL-terminated.
-pub(crate) unsafe fn key_arg(key_path: *const c_char) -> Result<KeySource, i32> {
-    // SAFETY: the contract of this function.
-    match unsafe { opt_cstr(key_path, "key_path") }? {
-        Some(p) => Ok(KeySource::File(KeyFile::open(p))),
-        None => default_key_path(None)
-            .map(|p| KeySource::File(KeyFile::open(p)))
-            .map_err(|e| fail(&Error::KeyFile(e))),
-    }
-}
-
 /// A client that stays connected (reconnecting every few seconds).
 #[allow(non_camel_case_types)]
-pub struct stintmate_ipc_client(Client);
+pub struct stintmate_ipc_client(Client, #[allow(dead_code)] Handle);
+
+/// Options of a client (spec 2.7); `struct_size` is `sizeof`. T3 applies them.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub struct stintmate_ipc_client_opts {
+    /// `sizeof` this struct.
+    pub struct_size: usize,
+    /// 1 (default): reconnect after a lost connection.
+    pub reconnect: i32,
+    /// The event queue of the connection (0: 1024).
+    pub event_queue: usize,
+}
 
 /// A call in flight.
 #[allow(non_camel_case_types)]
-pub struct stintmate_ipc_pending(PendingCall);
+pub struct stintmate_ipc_pending(PendingCall, #[allow(dead_code)] Handle);
 
 /// A subscription.
 #[allow(non_camel_case_types)]
-pub struct stintmate_ipc_subscription(SubscriptionHandle);
+pub struct stintmate_ipc_subscription(SubscriptionHandle, #[allow(dead_code)] Handle);
 
 /// What a subscriber callback receives; the pointers are valid only during the callback.
 #[repr(C)]
@@ -145,15 +144,17 @@ fn timeout_arg(ms: u32) -> Option<Duration> {
 }
 
 /// Creates a client of the endpoint at `pipe` (see `stintmate_ipc_pipe_path`); it does not
-/// connect until `stintmate_ipc_client_start`. `key_path` null uses the default key file.
+/// connect until `stintmate_ipc_client_start`. `key` null uses the default key file; `opts`
+/// may be null.
 ///
 /// # Safety
-/// Strings NUL-terminated; `info` per `stintmate_ipc_peer_info`; `out` valid for a write.
+/// Strings NUL-terminated; `info`, `key` and `opts` per their structs; `out` valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_client_new(
     pipe: *const c_char,
     info: *const stintmate_ipc_peer_info,
-    key_path: *const c_char,
+    key: *const stintmate_ipc_key_source,
+    _opts: *const stintmate_ipc_client_opts,
     out: *mut *mut stintmate_ipc_client,
 ) -> i32 {
     guard(|| {
@@ -170,7 +171,7 @@ pub unsafe extern "C" fn stintmate_ipc_client_new(
                 Ok(i) => i,
                 Err(s) => return s,
             };
-            let key = match key_arg(key_path) {
+            let key = match key_source_arg(key) {
                 Ok(k) => k,
                 Err(s) => return s,
             };
@@ -178,8 +179,10 @@ pub unsafe extern "C" fn stintmate_ipc_client_new(
         };
         match Client::new(pipe, info, key) {
             Ok(c) => {
+                let closer = c.clone();
+                let handle = Handle::with_closer(move || closer.close());
                 // SAFETY: `out` is valid for a write.
-                unsafe { out.write(Box::into_raw(Box::new(stintmate_ipc_client(c)))) };
+                unsafe { out.write(Box::into_raw(Box::new(stintmate_ipc_client(c, handle)))) };
                 STINTMATE_IPC_OK
             }
             Err(e) => fail(&e),
@@ -265,7 +268,8 @@ fn call_options(version: u32, timeout_ms: u32) -> CallOptions {
     }
 }
 
-/// Writes the outcome of a call: the result, or for a remote error its MessagePack map.
+/// Writes the outcome of a call: the result, or records the error (a remote error's details
+/// are in the error record).
 ///
 /// # Safety
 /// `out` null or valid for a write.
@@ -273,19 +277,12 @@ unsafe fn finish(result: Result<Value, Error>, out: *mut stintmate_ipc_buffer) -
     match result {
         // SAFETY: forwarded contract.
         Ok(v) => unsafe { put_value(out, &v) },
-        Err(Error::Remote(r)) => {
-            let status = fail(&Error::Remote(r.clone()));
-            // SAFETY: forwarded contract.
-            unsafe { put_value(out, &r.to_value()) };
-            status
-        }
         Err(e) => fail(&e),
     }
 }
 
 /// Calls a method and waits for the result. `params`/`params_len` are MessagePack (length 0:
-/// nil). `timeout_ms` is the deadline (0: none). The result (or, on `STINTMATE_IPC_E_REMOTE`,
-/// the error map) is written to `result_out`, to be freed with `stintmate_ipc_free_buffer`.
+/// nil). `timeout_ms` is the deadline (0: none). The result is written to `result_out`, to be freed with `stintmate_ipc_free_buffer`.
 ///
 /// # Safety
 /// `client` valid; `method` NUL-terminated; `params` valid for `params_len` bytes;
@@ -359,7 +356,10 @@ pub unsafe extern "C" fn stintmate_ipc_call_async(
                 .call_async(method, params, call_options(version, timeout_ms))
             {
                 Ok(p) => {
-                    out.write(Box::into_raw(Box::new(stintmate_ipc_pending(p))));
+                    out.write(Box::into_raw(Box::new(stintmate_ipc_pending(
+                        p,
+                        Handle::new(),
+                    ))));
                     STINTMATE_IPC_OK
                 }
                 Err(e) => fail(&e),
@@ -422,7 +422,7 @@ pub unsafe extern "C" fn stintmate_ipc_call_free(call: *mut stintmate_ipc_pendin
 }
 
 fn deliver(
-    user: UserData,
+    user: &Registration,
     cb: unsafe extern "C-unwind" fn(*mut c_void, *const stintmate_ipc_delivery),
     d: Delivery,
 ) {
@@ -468,7 +468,10 @@ fn deliver(
     };
     // A panic of the callback is contained: the lane goes on with the next delivery.
     // SAFETY: `cb` and `user` are the embedder's; the struct outlives the call.
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { cb(user.get(), &raw const c) }));
+    let Some(_g) = enter() else { return };
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        cb(user.user_data(), &raw const c)
+    }));
 }
 
 /// Subscribes to a channel of the server, now and after every reconnect. `options` is a
@@ -489,6 +492,7 @@ pub unsafe extern "C" fn stintmate_ipc_subscribe(
     on_delivery: stintmate_ipc_delivery_cb,
     on_end: stintmate_ipc_end_cb,
     user_data: *mut c_void,
+    release: stintmate_ipc_release_cb,
     out: *mut *mut stintmate_ipc_subscription,
 ) -> i32 {
     guard(|| {
@@ -512,24 +516,29 @@ pub unsafe extern "C" fn stintmate_ipc_subscribe(
                 Ok(v) => Some(v),
                 Err(s) => return s,
             };
-            let user = UserData(user_data);
+            let user = Registration::new(user_data, release);
             let mut opts = SubscribeOptions {
                 version,
                 options,
                 ..SubscribeOptions::default()
             };
             if let Some(end) = on_end {
+                let user = user.clone();
                 opts.on_end = Some(Arc::new(move |ch: &str, code: &str, msg: &str| {
+                    let Some(_g) = enter() else { return };
                     let to_c =
                         |s: &str| std::ffi::CString::new(s.replace('\0', "")).unwrap_or_default();
                     let (ch, code, msg) = (to_c(ch), to_c(code), to_c(msg));
                     let _ = catch_unwind(AssertUnwindSafe(|| {
-                        end(user.get(), ch.as_ptr(), code.as_ptr(), msg.as_ptr());
+                        end(user.user_data(), ch.as_ptr(), code.as_ptr(), msg.as_ptr());
                     }));
                 }));
             }
-            let handle = c.0.subscribe(channel, opts, move |d| deliver(user, cb, d));
-            out.write(Box::into_raw(Box::new(stintmate_ipc_subscription(handle))));
+            let handle = c.0.subscribe(channel, opts, move |d| deliver(&user, cb, d));
+            out.write(Box::into_raw(Box::new(stintmate_ipc_subscription(
+                handle,
+                Handle::new(),
+            ))));
             STINTMATE_IPC_OK
         }
     })

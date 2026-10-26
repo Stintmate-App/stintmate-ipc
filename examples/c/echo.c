@@ -30,8 +30,12 @@ int main(int argc, char **argv) {
     info.name = "C example";
     info.version = "1.0";
 
+    stintmate_ipc_key_source key = {0};
+    key.struct_size = sizeof key;
+    key.path = argv[2];
+
     stintmate_ipc_client *client = NULL;
-    if (stintmate_ipc_client_new(argv[1], &info, argv[2], &client) != STINTMATE_IPC_OK) {
+    if (stintmate_ipc_client_new(argv[1], &info, &key, NULL, &client) != STINTMATE_IPC_OK) {
         print_last_error("client_new");
         return 1;
     }

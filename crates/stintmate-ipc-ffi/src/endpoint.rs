@@ -14,10 +14,14 @@ use stintmate_ipc::codec::Value;
 use stintmate_ipc::error::{Error, RemoteError};
 use stintmate_ipc::layout::Layout;
 
-use crate::client::{key_arg, peer_info_arg, stintmate_ipc_peer_info};
+use crate::client::{peer_info_arg, stintmate_ipc_peer_info};
+use crate::keys::{key_source_arg, stintmate_ipc_key_source};
+use crate::runtime::{
+    Handle, Registration, count_handle, enter, stintmate_ipc_release_cb, uncount_handle,
+};
 use crate::{
-    STINTMATE_IPC_E_INTERNAL, STINTMATE_IPC_E_INVALID_ARG, STINTMATE_IPC_OK, UserData, cstr, fail,
-    guard, invalid, opt_cstr, put_buffer, set_error, value_arg, versions_arg,
+    STINTMATE_IPC_E_INTERNAL, STINTMATE_IPC_OK, cstr, fail, guard, invalid, opt_cstr, put_buffer,
+    value_arg, versions_arg,
 };
 
 /// `STINTMATE_IPC_METHOD_ORDERED`: one call at a time per connection, in arrival order.
@@ -31,7 +35,20 @@ pub const STINTMATE_IPC_METHOD_IDEMPOTENT: u32 = 4;
 
 /// The server of one endpoint.
 #[allow(non_camel_case_types)]
-pub struct stintmate_ipc_endpoint(Endpoint);
+pub struct stintmate_ipc_endpoint(Endpoint, #[allow(dead_code)] Handle);
+
+/// Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. The fields after
+/// `handler_threads` are added by T2.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub struct stintmate_ipc_endpoint_opts {
+    /// `sizeof` this struct.
+    pub struct_size: usize,
+    /// A full path or short pipe name; null: derived from the app id.
+    pub pipe: *const c_char,
+    /// The handler pool size; 0: 8.
+    pub handler_threads: u32,
+}
 
 /// A channel offered by an endpoint.
 #[allow(non_camel_case_types)]
@@ -47,6 +64,7 @@ pub enum stintmate_ipc_channel {
 struct ResponderInner {
     tx: Sender<Result<Value, RemoteError>>,
     ctx: Context,
+    _handle: Handle,
 }
 
 /// The way a method handler answers: exactly one of `stintmate_ipc_respond` or
@@ -67,17 +85,16 @@ pub type stintmate_ipc_handler_cb = Option<
     ),
 >;
 
-/// Creates an endpoint. `pipe` null derives it from the app id (and process); `key_path` null
-/// uses the default key file; `handler_threads` 0 is the default (8).
+/// Creates an endpoint. `key` null uses the default key file; `opts` may be null (the pipe is
+/// derived from the app id and process, the handler pool has 8 threads).
 ///
 /// # Safety
-/// Strings NUL-terminated; `info` per `stintmate_ipc_peer_info`; `out` valid for a write.
+/// `info`, `key` and `opts` per their structs; `out` valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_endpoint_new(
-    pipe: *const c_char,
     info: *const stintmate_ipc_peer_info,
-    key_path: *const c_char,
-    handler_threads: u32,
+    key: *const stintmate_ipc_key_source,
+    opts: *const stintmate_ipc_endpoint_opts,
     out: *mut *mut stintmate_ipc_endpoint,
 ) -> i32 {
     guard(|| {
@@ -85,20 +102,20 @@ pub unsafe extern "C" fn stintmate_ipc_endpoint_new(
             return invalid("out is null");
         }
         // SAFETY: the contract of this function.
-        let (pipe, info, key) = unsafe {
-            let pipe = match opt_cstr(pipe, "pipe") {
-                Ok(p) => p,
+        let (pipe, handler_threads, info, key) = unsafe {
+            let (pipe, handler_threads) = match opts_arg(opts) {
+                Ok(o) => o,
                 Err(s) => return s,
             };
             let info = match peer_info_arg(info) {
                 Ok(i) => i,
                 Err(s) => return s,
             };
-            let key = match key_arg(key_path) {
+            let key = match key_source_arg(key) {
                 Ok(k) => k,
                 Err(s) => return s,
             };
-            (pipe, info, key)
+            (pipe, handler_threads, info, key)
         };
         let mut b = Endpoint::builder(info, key);
         if let Some(p) = pipe {
@@ -109,13 +126,48 @@ pub unsafe extern "C" fn stintmate_ipc_endpoint_new(
         }
         match b.build() {
             Ok(e) => {
+                let closer = e.clone();
+                let handle = Handle::with_closer(move || closer.stop());
                 // SAFETY: `out` is valid for a write.
-                unsafe { out.write(Box::into_raw(Box::new(stintmate_ipc_endpoint(e)))) };
+                unsafe { out.write(Box::into_raw(Box::new(stintmate_ipc_endpoint(e, handle)))) };
                 STINTMATE_IPC_OK
             }
             Err(e) => fail(&e),
         }
     })
+}
+
+/// The pipe and the handler pool size of the options (null options: derived, 0).
+///
+/// # Safety
+/// `opts` null or per `stintmate_ipc_endpoint_opts`.
+unsafe fn opts_arg<'a>(
+    opts: *const stintmate_ipc_endpoint_opts,
+) -> Result<(Option<&'a str>, u32), i32> {
+    use std::mem::offset_of;
+    if opts.is_null() {
+        return Ok((None, 0));
+    }
+    // SAFETY: the first field is readable per the contract.
+    let size = unsafe { opts.cast::<usize>().read_unaligned() };
+    let end = |off: usize, len: usize| size >= off + len;
+    let base = opts.cast::<u8>();
+    // SAFETY: each field is read only when it lies inside `struct_size`.
+    unsafe {
+        let off = offset_of!(stintmate_ipc_endpoint_opts, pipe);
+        let pipe = if end(off, size_of::<*const c_char>()) {
+            base.add(off).cast::<*const c_char>().read_unaligned()
+        } else {
+            std::ptr::null()
+        };
+        let off = offset_of!(stintmate_ipc_endpoint_opts, handler_threads);
+        let threads = if end(off, size_of::<u32>()) {
+            base.add(off).cast::<u32>().read_unaligned()
+        } else {
+            0
+        };
+        Ok((opt_cstr(pipe, "opts.pipe")?, threads))
+    }
 }
 
 /// Creates the pipe and starts serving. Declare methods and channels before or after.
@@ -204,6 +256,7 @@ pub unsafe extern "C" fn stintmate_ipc_endpoint_method(
     n_versions: usize,
     handler: stintmate_ipc_handler_cb,
     user_data: *mut c_void,
+    release: stintmate_ipc_release_cb,
 ) -> i32 {
     guard(|| {
         let Some(cb) = handler else {
@@ -227,19 +280,23 @@ pub unsafe extern "C" fn stintmate_ipc_endpoint_method(
             idempotent: flags & STINTMATE_IPC_METHOD_IDEMPOTENT != 0,
             ..MethodOpts::default()
         };
-        let user = UserData(user_data);
+        let user = Registration::new(user_data, release);
         let r = e.0.method(name, opts, move |ctx: &Context, params: Value| {
+            let Some(_active) = enter() else {
+                return Err(RemoteError::new("unavailable", "the library was shut down"));
+            };
             let bytes = stintmate_ipc::codec::encode(&params)
                 .map_err(|e| RemoteError::new("internal", e.to_string()))?;
             let (tx, rx) = bounded(1);
             let inner = Arc::new(stintmate_ipc_responder(ResponderInner {
                 tx,
                 ctx: ctx.clone(),
+                _handle: Handle::new(),
             }));
             // The callback owns one reference (released by respond); we keep ours.
             let handle = Arc::into_raw(inner.clone()).cast_mut();
             // SAFETY: the embedder's callback; `bytes` outlives the call.
-            unsafe { cb(user.get(), handle, bytes.as_ptr(), bytes.len()) };
+            unsafe { cb(user.user_data(), handle, bytes.as_ptr(), bytes.len()) };
             loop {
                 match rx.recv_timeout(Duration::from_millis(20)) {
                     Ok(r) => return r,
@@ -320,6 +377,22 @@ unsafe fn answer(
     STINTMATE_IPC_OK
 }
 
+/// After shutdown nobody waits for an answer: the responder is still consumed (so it is not
+/// leaked) and the call fails with `STINTMATE_IPC_E_SHUTDOWN`.
+///
+/// # Safety
+/// `responder` null or from a handler callback, answered once.
+unsafe fn after_shutdown(responder: *mut stintmate_ipc_responder) -> Option<i32> {
+    if !crate::runtime::is_shutdown() {
+        return None;
+    }
+    if !responder.is_null() {
+        // SAFETY: `Arc::into_raw` made it in the handler wrapper; this consumes that reference.
+        drop(unsafe { Arc::from_raw(responder.cast_const()) });
+    }
+    Some(crate::runtime::shutdown_status())
+}
+
 /// Answers a call with a result (MessagePack; length 0: nil). Consumes the responder.
 ///
 /// # Safety
@@ -331,6 +404,10 @@ pub unsafe extern "C" fn stintmate_ipc_respond(
     result: *const u8,
     result_len: usize,
 ) -> i32 {
+    // SAFETY: the contract of this function.
+    if let Some(status) = unsafe { after_shutdown(responder) } {
+        return status;
+    }
     guard(|| {
         // SAFETY: the contract of this function.
         unsafe {
@@ -359,6 +436,10 @@ pub unsafe extern "C" fn stintmate_ipc_respond_error(
     details: *const u8,
     details_len: usize,
 ) -> i32 {
+    // SAFETY: the contract of this function.
+    if let Some(status) = unsafe { after_shutdown(responder) } {
+        return status;
+    }
     guard(|| {
         // SAFETY: the contract of this function.
         unsafe {
@@ -381,6 +462,7 @@ unsafe fn channel_out(
 ) -> i32 {
     match ch {
         Ok(c) => {
+            count_handle();
             // SAFETY: `out` is valid for a write.
             unsafe { out.write(Box::into_raw(Box::new(c))) };
             STINTMATE_IPC_OK
@@ -501,8 +583,7 @@ pub unsafe extern "C" fn stintmate_ipc_stream_channel(
             let layout = match Layout::from_value(&layout) {
                 Ok(l) => l,
                 Err(e) => {
-                    set_error(e.to_string());
-                    return STINTMATE_IPC_E_INVALID_ARG;
+                    return invalid(&e.to_string());
                 }
             };
             channel_out(
@@ -557,10 +638,7 @@ pub unsafe extern "C" fn stintmate_ipc_publish(
                     };
                     match s.send(body, ts) {
                         Ok(_) => STINTMATE_IPC_OK,
-                        Err(e) => {
-                            set_error(e.to_string());
-                            STINTMATE_IPC_E_INVALID_ARG
-                        }
+                        Err(e) => invalid(&e.to_string()),
                     }
                 }
                 stintmate_ipc_channel::Event(c) => match value_arg(data, len, "data") {
@@ -608,4 +686,5 @@ pub unsafe extern "C" fn stintmate_ipc_channel_free(ch: *mut stintmate_ipc_chann
     }
     // SAFETY: made by `Box::into_raw` in a channel constructor.
     drop(unsafe { Box::from_raw(ch) });
+    uncount_handle();
 }
