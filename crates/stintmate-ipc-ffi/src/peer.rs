@@ -1212,11 +1212,16 @@ impl Setup {
 
     /// It never started: frees the handle; `on_end` hears of it with a null subscription.
     fn abort(self, code: &str, message: &str) {
-        // SAFETY: made by `Box::into_raw`; nothing else holds the pointer but `state`, whose
-        // callbacks have not run and now cannot.
-        drop(unsafe { Box::from_raw(self.sub) });
+        // Callbacks that start from now on see no handle; those already running (on_end on a
+        // lane, a delivery) may still hold it, so it is freed only after they ended.
+        self.state
+            .ptr
+            .store(std::ptr::null_mut(), Ordering::Release);
         let reg = lock(&self.state.user).clone();
         self.state.finish();
+        // SAFETY: made by `Box::into_raw`; `finish` waited for every callback that could
+        // have been given the pointer, and no new one starts.
+        drop(unsafe { Box::from_raw(self.sub) });
         if let (Some(end), Some(reg)) = (self.on_end_user, reg) {
             let (ch, code, msg) = (c_string(&self.channel), c_string(code), c_string(message));
             post_hook(move || {
