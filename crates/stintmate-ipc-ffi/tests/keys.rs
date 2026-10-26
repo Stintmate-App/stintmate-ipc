@@ -242,11 +242,7 @@ fn key_source_forms_open_an_endpoint() {
         meta_len: 0,
     };
     let pipe = c(&format!("stintmate-ffi-ks-{}", random_tag()));
-    let opts = EndpointOpts {
-        struct_size: size_of::<EndpointOpts>(),
-        pipe: pipe.as_ptr(),
-        handler_threads: 1,
-    };
+    let opts = EndpointOpts::new(pipe.as_ptr(), 1);
     let make = |ks: &KeySource| {
         let mut ep = std::ptr::null_mut();
         let st = unsafe { (a.endpoint_new)(&info, ks, &opts, &mut ep) };

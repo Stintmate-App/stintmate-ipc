@@ -13,6 +13,7 @@ use stintmate_ipc::layout::{FieldType, Layout};
 use crate::client::*;
 use crate::endpoint::*;
 use crate::keys::*;
+use crate::node::*;
 use crate::*;
 
 /// The buffer counter is global: tests that count run one at a time.
@@ -102,7 +103,15 @@ impl Rig {
         let opts = stintmate_ipc_endpoint_opts {
             struct_size: size_of::<stintmate_ipc_endpoint_opts>(),
             pipe: pipe.as_ptr(),
+            registry: std::ptr::null(),
+            handshake_timeout_ms: -1,
             handler_threads: 4,
+            heartbeat_ms: 0,
+            event_queue: 0,
+            event_queue_bytes: 0,
+            max_inflight: 0,
+            features: std::ptr::null(),
+            features_len: 0,
         };
         let (app_s, app_c) = (c("server"), c("client"));
         let info = |app: &CString| stintmate_ipc_peer_info {
@@ -166,12 +175,10 @@ impl Rig {
     fn method(&self, name: &str, cb: stintmate_ipc_handler_cb, user: *mut c_void) {
         let n = c(name);
         let st = unsafe {
-            stintmate_ipc_endpoint_method(
-                self.ep,
+            stintmate_ipc_method(
+                stintmate_ipc_endpoint_node(self.ep),
                 n.as_ptr(),
-                0,
                 std::ptr::null(),
-                0,
                 cb,
                 user,
                 None,
@@ -193,7 +200,7 @@ impl Drop for Rig {
 
 unsafe extern "C-unwind" fn echo(
     _user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     params: *const u8,
     len: usize,
 ) {
@@ -202,17 +209,17 @@ unsafe extern "C-unwind" fn echo(
 
 unsafe extern "C-unwind" fn fail_with(
     _user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
     let (code, msg) = (c("nope"), c("not today"));
-    unsafe { stintmate_ipc_respond_error(r, code.as_ptr(), msg.as_ptr(), std::ptr::null(), 0) };
+    unsafe { stintmate_ipc_respond_error(r, code.as_ptr(), msg.as_ptr(), std::ptr::null(), 0, -1) };
 }
 
 unsafe extern "C-unwind" fn panics(
     _user: *mut c_void,
-    _r: *mut stintmate_ipc_responder,
+    _r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
@@ -222,7 +229,7 @@ unsafe extern "C-unwind" fn panics(
 /// Never answers on its own: parks the responder for the test to answer later.
 unsafe extern "C-unwind" fn park(
     user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
@@ -338,7 +345,7 @@ fn timeout_then_a_late_answer_is_harmless() {
         !parked.lock().unwrap().is_empty()
     });
     // Answering after the deadline must not fail or leak a pending state.
-    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_responder;
+    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_request;
     assert_eq!(unsafe { stintmate_ipc_respond(r, std::ptr::null(), 0) }, 0);
 }
 
@@ -374,10 +381,10 @@ fn cancel_and_wait() {
     wait_for("the handler to be called", || {
         !parked.lock().unwrap().is_empty()
     });
-    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_responder;
+    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_request;
     wait_for(
         "the cancel to arrive",
-        || unsafe { stintmate_ipc_responder_is_cancelled(r) } == 1,
+        || unsafe { stintmate_ipc_request_is_cancelled(r) } == 1,
     );
     unsafe { stintmate_ipc_respond(r, std::ptr::null(), 0) };
 
@@ -457,7 +464,15 @@ fn subscribe_in_order_and_survive_a_panicking_callback() {
     let name = c("t.events");
     let mut ev = std::ptr::null_mut();
     assert_eq!(
-        unsafe { stintmate_ipc_event_channel(rig.ep, name.as_ptr(), std::ptr::null(), 0, &mut ev) },
+        unsafe {
+            stintmate_ipc_event_channel(
+                stintmate_ipc_endpoint_node(rig.ep),
+                name.as_ptr(),
+                std::ptr::null(),
+                0,
+                &mut ev,
+            )
+        },
         0
     );
     rig.go();
@@ -470,7 +485,18 @@ fn subscribe_in_order_and_survive_a_panicking_callback() {
     for i in 0..200i64 {
         let p = mp(&Value::from(i));
         assert_eq!(
-            unsafe { stintmate_ipc_publish(ev, p.as_ptr(), p.len(), STINTMATE_IPC_TS_NOW) },
+            unsafe {
+                stintmate_ipc_publish(
+                    ev,
+                    p.as_ptr(),
+                    p.len(),
+                    STINTMATE_IPC_TS_NOW,
+                    0,
+                    None,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
             0
         );
     }
@@ -498,7 +524,7 @@ fn state_snapshot_and_stream_samples() {
     assert_eq!(
         unsafe {
             stintmate_ipc_state_channel(
-                rig.ep,
+                stintmate_ipc_endpoint_node(rig.ep),
                 sname.as_ptr(),
                 initial.as_ptr(),
                 initial.len(),
@@ -516,7 +542,7 @@ fn state_snapshot_and_stream_samples() {
     assert_eq!(
         unsafe {
             stintmate_ipc_stream_channel(
-                rig.ep,
+                stintmate_ipc_endpoint_node(rig.ep),
                 tname.as_ptr(),
                 layout.as_ptr(),
                 layout.len(),
@@ -547,7 +573,13 @@ fn state_snapshot_and_stream_samples() {
         let body = n.to_le_bytes();
         assert_eq!(
             unsafe {
-                stintmate_ipc_publish(stream, body.as_ptr(), body.len(), 1_000 + i64::from(n))
+                stintmate_ipc_stream_send(
+                    stream,
+                    body.as_ptr(),
+                    body.len(),
+                    1_000 + i64::from(n),
+                    std::ptr::null_mut(),
+                )
             },
             0
         );
