@@ -365,7 +365,7 @@ pub(crate) fn uncount_handle() {
 /// The number of handles handed out and not yet released (a leak check for tests).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_live_handles() -> isize {
-    STATE.live_handles.load(Ordering::Relaxed)
+    crate::run(0, || STATE.live_handles.load(Ordering::Relaxed))
 }
 
 // ------------------------------------------------------------------------ thread hooks
@@ -530,8 +530,13 @@ pub extern "C" fn stintmate_ipc_set_log_level(level: i32) -> i32 {
 
 /// Ends the library: no callback starts after this, running ones are waited for (up to
 /// `timeout_ms`; `STINTMATE_IPC_FOREVER` waits as long as it takes), handles are closed, the
-/// library's threads end and every pending `release` runs before it returns. Later calls fail
-/// with `STINTMATE_IPC_E_SHUTDOWN`. Idempotent; not callable from a callback.
+/// hooks and log threads end and every pending `release` runs before it returns. Later calls
+/// fail with `STINTMATE_IPC_E_SHUTDOWN`. Idempotent; not callable from a callback.
+///
+/// Never unload the DLL (`FreeLibrary`) afterwards: the core runtime's worker and blocking-pool
+/// threads are not all joined and keep running library code until the process ends. A thread
+/// that ends after shutdown started gets no `on_stop` (the hook would run from the thread's
+/// exit, when the host may be gone).
 /// `STINTMATE_IPC_E_WAIT_TIMEOUT` when callbacks were still running (call again to finish).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_shutdown(timeout_ms: i64) -> i32 {

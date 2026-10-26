@@ -72,29 +72,33 @@ static SPEC_REVISION: std::sync::LazyLock<std::ffi::CString> = std::sync::LazyLo
 /// `(MAJOR << 16) | MINOR` of the ABI this library implements.
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_abi_version() -> u32 {
-    (STINTMATE_IPC_ABI_MAJOR << 16) | STINTMATE_IPC_ABI_MINOR
+    crate::run(0, || {
+        (STINTMATE_IPC_ABI_MAJOR << 16) | STINTMATE_IPC_ABI_MINOR
+    })
 }
 
 /// The library's (crate) version as a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_version() -> *const c_char {
-    VERSION.as_ptr()
+    crate::run(std::ptr::null(), || VERSION.as_ptr())
 }
 
 /// The revision of `SPEC.md` this library follows, as a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_spec_revision() -> *const c_char {
-    SPEC_REVISION.as_ptr()
+    crate::run(std::ptr::null(), || SPEC_REVISION.as_ptr())
 }
 
 /// The protocol version the library speaks (the highest it offers in the handshake).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_protocol_version() -> u32 {
-    stintmate_ipc::handshake::SUPPORTED_VERSIONS
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
+    crate::run(0, || {
+        stintmate_ipc::handshake::SUPPORTED_VERSIONS
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+    })
 }
 
 // ------------------------------------------------------------------------ status codes
@@ -265,6 +269,30 @@ pub(crate) fn guard(f: impl FnOnce() -> i32) -> i32 {
     }
 }
 
+/// Runs a getter or a release function: a panic returns `default` instead of unwinding out of the
+/// DLL (these entry points work after shutdown, so no shutdown gate).
+pub(crate) fn run<T>(default: T, f: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => default,
+    }
+}
+
+/// [`run`] for a status-returning function that works after shutdown: a panic is recorded and
+/// answered with [`STINTMATE_IPC_E_PANIC`].
+pub(crate) fn run_status(f: impl FnOnce() -> i32) -> i32 {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(status) => status,
+        Err(payload) => {
+            record_error(
+                STINTMATE_IPC_E_PANIC,
+                format!("panic: {}", panic_message(payload.as_ref())),
+            );
+            STINTMATE_IPC_E_PANIC
+        }
+    }
+}
+
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -283,21 +311,23 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// `buf` must be null or valid for writes of `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_last_error_message(buf: *mut c_char, len: usize) -> usize {
-    LAST_ERROR
-        .try_with(|e| {
-            let e = e.borrow();
-            let bytes = e.message.as_bytes();
-            if !buf.is_null() && len > 0 {
-                let n = bytes.len().min(len - 1);
-                // SAFETY: the caller guarantees `buf` is valid for `len` bytes and n < len.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), n);
-                    *buf.add(n) = 0;
+    crate::run(0, || {
+        LAST_ERROR
+            .try_with(|e| {
+                let e = e.borrow();
+                let bytes = e.message.as_bytes();
+                if !buf.is_null() && len > 0 {
+                    let n = bytes.len().min(len - 1);
+                    // SAFETY: the caller guarantees `buf` is valid for `len` bytes and n < len.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), n);
+                        *buf.add(n) = 0;
+                    }
                 }
-            }
-            bytes.len()
-        })
-        .unwrap_or(0)
+                bytes.len()
+            })
+            .unwrap_or(0)
+    })
 }
 
 /// The calling thread's last failure as a MessagePack map `{status, message, code?, data?,
@@ -308,33 +338,36 @@ pub unsafe extern "C" fn stintmate_ipc_last_error_message(buf: *mut c_char, len:
 /// `out` valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_last_error(out: *mut stintmate_ipc_buffer) -> i32 {
-    if out.is_null() {
-        return invalid("out is null");
-    }
-    let map = LAST_ERROR
-        .try_with(|e| {
-            let e = e.borrow();
-            let mut pairs: Vec<(&str, Value)> = vec![
-                ("status", Value::from(i64::from(e.status))),
-                ("message", Value::from(e.message.as_str())),
-            ];
-            if let Some(c) = &e.code {
-                pairs.push(("code", Value::from(c.as_str())));
-            }
-            if let Some(d) = &e.data {
-                pairs.push(("data", d.clone()));
-            }
-            if let Some(r) = e.retry_ms {
-                pairs.push(("retry_ms", Value::from(r)));
-            }
-            if let Some(o) = e.os_error {
-                pairs.push(("os_error", Value::from(i64::from(o))));
-            }
-            codec::map(pairs)
-        })
-        .unwrap_or(Value::Nil);
-    // SAFETY: `out` per the contract.
-    unsafe { put_value(out, &map) }
+    crate::run_status(|| {
+        if out.is_null() {
+            // Not recorded: that would overwrite the very record the caller asked for.
+            return STINTMATE_IPC_E_INVALID_ARG;
+        }
+        let map = LAST_ERROR
+            .try_with(|e| {
+                let e = e.borrow();
+                let mut pairs: Vec<(&str, Value)> = vec![
+                    ("status", Value::from(i64::from(e.status))),
+                    ("message", Value::from(e.message.as_str())),
+                ];
+                if let Some(c) = &e.code {
+                    pairs.push(("code", Value::from(c.as_str())));
+                }
+                if let Some(d) = &e.data {
+                    pairs.push(("data", d.clone()));
+                }
+                if let Some(r) = e.retry_ms {
+                    pairs.push(("retry_ms", Value::from(r)));
+                }
+                if let Some(o) = e.os_error {
+                    pairs.push(("os_error", Value::from(i64::from(o))));
+                }
+                codec::map(pairs)
+            })
+            .unwrap_or(Value::Nil);
+        // SAFETY: `out` per the contract.
+        unsafe { put_value(out, &map) }
+    })
 }
 
 // ------------------------------------------------------------------------ buffers
@@ -398,18 +431,20 @@ pub(crate) unsafe fn put_value(out: *mut stintmate_ipc_buffer, value: &Value) ->
 /// `buf` must come from the library and not be freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_free_buffer(buf: stintmate_ipc_buffer) {
-    if buf.ptr.is_null() {
-        return;
-    }
-    LIVE_BUFFERS.fetch_sub(1, Ordering::Relaxed);
-    // SAFETY: the pointer and length are those of a boxed slice made by `put_buffer`.
-    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(buf.ptr, buf.len)) });
+    crate::run((), || {
+        if buf.ptr.is_null() {
+            return;
+        }
+        LIVE_BUFFERS.fetch_sub(1, Ordering::Relaxed);
+        // SAFETY: the pointer and length are those of a boxed slice made by `put_buffer`.
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(buf.ptr, buf.len)) });
+    })
 }
 
 /// The number of buffers handed out and not yet freed (a leak check for tests).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_live_buffers() -> isize {
-    LIVE_BUFFERS.load(Ordering::Relaxed)
+    crate::run(0, || LIVE_BUFFERS.load(Ordering::Relaxed))
 }
 
 // ------------------------------------------------------------------------ argument helpers

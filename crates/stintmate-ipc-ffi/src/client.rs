@@ -351,8 +351,10 @@ pub unsafe extern "C" fn stintmate_ipc_client_connect(
 /// `c` null or live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_client_is_connected(c: *mut stintmate_ipc_client) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe { c.as_ref() }.map_or(0, |c| i32::from(c.0.is_connected()))
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { c.as_ref() }.map_or(0, |c| i32::from(c.0.is_connected()))
+    })
 }
 
 /// An owned reference to the current connection; `E_NOT_CONNECTED` when there is none.
@@ -507,14 +509,16 @@ pub unsafe extern "C" fn stintmate_ipc_reconnect_delay_ms(
     code: *const c_char,
     attempt: u32,
 ) -> i64 {
-    let code = if code.is_null() {
-        None
-    } else {
-        // SAFETY: NUL-terminated per the contract.
-        unsafe { CStr::from_ptr(code) }.to_str().ok()
-    };
-    stintmate_ipc::client::reconnect_delay(code, attempt)
-        .map_or(-1, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    crate::run(-1, || {
+        let code = if code.is_null() {
+            None
+        } else {
+            // SAFETY: NUL-terminated per the contract.
+            unsafe { CStr::from_ptr(code) }.to_str().ok()
+        };
+        stintmate_ipc::client::reconnect_delay(code, attempt)
+            .map_or(-1, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    })
 }
 
 /// One connection without reconnection (`connect()`): handshake and return the peer. With a
