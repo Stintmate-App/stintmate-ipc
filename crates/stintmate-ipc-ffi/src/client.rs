@@ -65,7 +65,11 @@ pub(crate) unsafe fn peer_info_arg(info: *const stintmate_ipc_peer_info) -> Resu
 
 /// A client that stays connected (reconnecting every few seconds).
 #[allow(non_camel_case_types)]
-pub struct stintmate_ipc_client(Client, #[allow(dead_code)] Handle);
+pub struct stintmate_ipc_client(
+    Client,
+    #[allow(dead_code)] Handle,
+    pub(crate) crate::node::stintmate_ipc_node,
+);
 
 /// Options of a client (spec 2.7); `struct_size` is `sizeof`. T3 applies them.
 #[repr(C)]
@@ -182,7 +186,15 @@ pub unsafe extern "C" fn stintmate_ipc_client_new(
                 let closer = c.clone();
                 let handle = Handle::with_closer(move || closer.close());
                 // SAFETY: `out` is valid for a write.
-                unsafe { out.write(Box::into_raw(Box::new(stintmate_ipc_client(c, handle)))) };
+                unsafe {
+                    out.write(Box::into_raw(Box::new(stintmate_ipc_client(
+                        c.clone(),
+                        handle,
+                        crate::node::stintmate_ipc_node::new(stintmate_ipc::blocking::Node::clone(
+                            &c,
+                        )),
+                    ))))
+                };
                 STINTMATE_IPC_OK
             }
             Err(e) => fail(&e),
