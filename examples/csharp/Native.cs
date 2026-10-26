@@ -66,10 +66,9 @@ namespace Stintmate.Ipc
 
         [DllImport(Lib)] public static extern int stintmate_ipc_client_new(byte[] pipe, ref PeerInfo info, ref KeySource key, IntPtr opts, out IntPtr client);
         [DllImport(Lib)] public static extern int stintmate_ipc_client_start(IntPtr client);
-        [DllImport(Lib)] public static extern int stintmate_ipc_client_wait_connected(IntPtr client, uint timeoutMs);
+        [DllImport(Lib)] public static extern int stintmate_ipc_client_wait_connected(IntPtr client, long timeoutMs, IntPtr peerOut);
         [DllImport(Lib)] public static extern void stintmate_ipc_client_free(IntPtr client);
-        [DllImport(Lib)] public static extern int stintmate_ipc_call(IntPtr client, byte[] method, uint version, byte[] pars, UIntPtr parsLen, uint timeoutMs, out Buffer result);
-        [DllImport(Lib)] public static extern int stintmate_ipc_subscribe(IntPtr client, byte[] channel, uint version, byte[] options, UIntPtr optionsLen, DeliveryCallback onDelivery, IntPtr onEnd, IntPtr userData, IntPtr release, out IntPtr subscription);
+        [DllImport(Lib)] public static extern int stintmate_ipc_client_call(IntPtr client, byte[] method, byte[] pars, UIntPtr parsLen, IntPtr opts, out Buffer result);
         [DllImport(Lib)] public static extern void stintmate_ipc_unsubscribe(IntPtr subscription);
 
         /// <summary>A NUL-terminated UTF-8 copy of a string, for the const char* parameters.</summary>

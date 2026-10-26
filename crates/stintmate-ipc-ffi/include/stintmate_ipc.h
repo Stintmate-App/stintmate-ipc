@@ -164,26 +164,6 @@
 #define STINTMATE_IPC_E_SHUTDOWN -20
 
 /**
- * `STINTMATE_IPC_DELIVERY_SNAPSHOT`: the state snapshot of the subscription.
- */
-#define STINTMATE_IPC_DELIVERY_SNAPSHOT 1
-
-/**
- * `STINTMATE_IPC_DELIVERY_DROPPED`: samples were dropped before this one.
- */
-#define STINTMATE_IPC_DELIVERY_DROPPED 2
-
-/**
- * `stintmate_ipc_delivery.kind` of an event or state.
- */
-#define STINTMATE_IPC_KIND_EVENT 0
-
-/**
- * `stintmate_ipc_delivery.kind` of a stream sample.
- */
-#define STINTMATE_IPC_KIND_SAMPLE 1
-
-/**
  * `STINTMATE_IPC_METHOD_ORDERED`: one call at a time per connection, in arrival order.
  */
 #define STINTMATE_IPC_METHOD_ORDERED 1
@@ -206,12 +186,32 @@
 #define STINTMATE_IPC_TS_NOW INT64_MIN
 
 /**
+ * `STINTMATE_IPC_DELIVERY_SNAPSHOT`: the state snapshot of the subscription.
+ */
+#define STINTMATE_IPC_DELIVERY_SNAPSHOT 1
+
+/**
+ * `STINTMATE_IPC_DELIVERY_DROPPED`: samples were dropped before this one.
+ */
+#define STINTMATE_IPC_DELIVERY_DROPPED 2
+
+/**
+ * `stintmate_ipc_delivery.kind` of an event or state.
+ */
+#define STINTMATE_IPC_KIND_EVENT 0
+
+/**
+ * `stintmate_ipc_delivery.kind` of a stream sample.
+ */
+#define STINTMATE_IPC_KIND_SAMPLE 1
+
+/**
  * A channel offered by an endpoint.
  */
 typedef struct stintmate_ipc_channel stintmate_ipc_channel;
 
 /**
- * A client that stays connected (reconnecting every few seconds).
+ * A client that stays connected (reconnecting with backoff), or makes one connection.
  */
 typedef struct stintmate_ipc_client stintmate_ipc_client;
 
@@ -219,6 +219,11 @@ typedef struct stintmate_ipc_client stintmate_ipc_client;
  * The server of one endpoint.
  */
 typedef struct stintmate_ipc_endpoint stintmate_ipc_endpoint;
+
+/**
+ * One connection (a reference to it: `stintmate_ipc_peer_ref` makes more).
+ */
+typedef struct stintmate_ipc_peer stintmate_ipc_peer;
 
 /**
  * A call in flight.
@@ -232,7 +237,7 @@ typedef struct stintmate_ipc_pending stintmate_ipc_pending;
 typedef struct stintmate_ipc_responder stintmate_ipc_responder;
 
 /**
- * A subscription.
+ * A subscription (of a peer, or kept by a client across reconnections).
  */
 typedef struct stintmate_ipc_subscription stintmate_ipc_subscription;
 
@@ -307,7 +312,7 @@ typedef struct {
 } stintmate_ipc_key_source;
 
 /**
- * Options of a client (spec 2.7); `struct_size` is `sizeof`. T3 applies them.
+ * Options of a client (spec 2.7); `struct_size` is `sizeof`.
  */
 typedef struct {
   /**
@@ -323,6 +328,56 @@ typedef struct {
    */
   size_t event_queue;
 } stintmate_ipc_client_opts;
+
+/**
+ * Called with each failed connection attempt: the error as `stintmate_ipc_last_error` has it.
+ */
+typedef void (*stintmate_ipc_error_cb)(void *user_data, const uint8_t *error, size_t len);
+
+/**
+ * Releases a `user_data` (rule 5): runs exactly once, after the last callback that can
+ * receive it.
+ */
+typedef void (*stintmate_ipc_release_cb)(void *user_data);
+
+/**
+ * A progress callback: the MessagePack of one `prog` message.
+ */
+typedef void (*stintmate_ipc_progress_cb)(void *user_data, const uint8_t *data, size_t len);
+
+/**
+ * Options of a call (spec 2.6); `struct_size` is `sizeof`.
+ */
+typedef struct {
+  /**
+   * `sizeof` this struct.
+   */
+  size_t struct_size;
+  /**
+   * The method version (0: 1).
+   */
+  uint32_t version;
+  /**
+   * The deadline in milliseconds (`STINTMATE_IPC_FOREVER`: none; 0: do not wait).
+   */
+  int64_t timeout_ms;
+  /**
+   * The idempotency key (null: none).
+   */
+  const char *idempotency_key;
+  /**
+   * Called with each progress message, on the hooks thread, in order (null: none).
+   */
+  stintmate_ipc_progress_cb on_progress;
+  /**
+   * Passed to `on_progress`.
+   */
+  void *user_data;
+  /**
+   * Releases `user_data`; runs once on every return after the options were read.
+   */
+  stintmate_ipc_release_cb release;
+} stintmate_ipc_call_opts;
 
 /**
  * What a subscriber callback receives; the pointers are valid only during the callback.
@@ -374,18 +429,57 @@ typedef struct {
 typedef void (*stintmate_ipc_delivery_cb)(void *user_data, const stintmate_ipc_delivery *delivery);
 
 /**
- * Called when a subscription ends (the owner closed it or the channel went away).
+ * Called when a subscription ends (the owner closed it or the channel went away). `sub` is
+ * null when the subscription never started (`peer_subscribe` failed).
  */
 typedef void (*stintmate_ipc_end_cb)(void *user_data,
+                                     stintmate_ipc_subscription *sub,
                                      const char *channel,
                                      const char *code,
                                      const char *message);
 
 /**
- * Releases a `user_data` (rule 5): runs exactly once, after the last callback that can
- * receive it.
+ * Options of a subscription (spec 2.6); `struct_size` is `sizeof`.
  */
-typedef void (*stintmate_ipc_release_cb)(void *user_data);
+typedef struct {
+  /**
+   * `sizeof` this struct.
+   */
+  size_t struct_size;
+  /**
+   * The channel version (0: 1).
+   */
+  uint32_t version;
+  /**
+   * A MessagePack map of subscribe options (null or length 0: none).
+   */
+  const uint8_t *options;
+  /**
+   * The length of `options`.
+   */
+  size_t options_len;
+  /**
+   * How long `peer_subscribe` waits for the answer (`STINTMATE_IPC_FOREVER`: no limit).
+   */
+  int64_t timeout_ms;
+  /**
+   * Required: runs on the connection's lane, in order.
+   */
+  stintmate_ipc_delivery_cb on_delivery;
+  /**
+   * Called when the subscription ends (null: none).
+   */
+  stintmate_ipc_end_cb on_end;
+  /**
+   * Passed to the callbacks.
+   */
+  void *user_data;
+  /**
+   * Releases `user_data` after the last callback (after `unsubscribe`); runs once on every
+   * return after the options were read.
+   */
+  stintmate_ipc_release_cb release;
+} stintmate_ipc_subscribe_opts;
 
 /**
  * Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. The fields after
@@ -415,6 +509,13 @@ typedef void (*stintmate_ipc_handler_cb)(void *user_data,
                                          stintmate_ipc_responder *responder,
                                          const uint8_t *params,
                                          size_t params_len);
+
+/**
+ * Called once, on the hooks thread, when a call ends. `p` is the call's handle: it is valid
+ * until the callback returns even if `stintmate_ipc_call_free` ran meanwhile (the free then
+ * takes effect when the callback returns).
+ */
+typedef void (*stintmate_ipc_done_cb)(void *user_data, stintmate_ipc_pending *p);
 
 /**
  * A thread hook: called on a library thread that runs callbacks.
@@ -497,138 +598,161 @@ ptrdiff_t stintmate_ipc_live_buffers(void);
 int32_t stintmate_ipc_client_new(const char *pipe,
                                  const stintmate_ipc_peer_info *info,
                                  const stintmate_ipc_key_source *key,
-                                 const stintmate_ipc_client_opts *_opts,
+                                 const stintmate_ipc_client_opts *opts,
                                  stintmate_ipc_client **out);
 
 /**
  * Starts connecting in the background.
  *
  * # Safety
- * `client` from `stintmate_ipc_client_new`.
+ * `c` from `stintmate_ipc_client_new`.
  */
-int32_t stintmate_ipc_client_start(stintmate_ipc_client *client);
+int32_t stintmate_ipc_client_start(stintmate_ipc_client *c);
 
 /**
- * Waits until connected, at most `timeout_ms`.
+ * Waits until connected, at most `timeout_ms` (`STINTMATE_IPC_FOREVER`: as long as it takes).
+ * `E_NOT_CONNECTED` otherwise, with the last attempt's error as its cause in the error record.
+ * `peer_out` may be null: an owned reference to the connection (`stintmate_ipc_peer_free`).
  *
  * # Safety
- * `client` from `stintmate_ipc_client_new`.
+ * `c` live; `peer_out` null or valid for a write.
  */
-int32_t stintmate_ipc_client_wait_connected(stintmate_ipc_client *client, uint32_t timeout_ms);
+int32_t stintmate_ipc_client_wait_connected(stintmate_ipc_client *c,
+                                            int64_t timeout_ms,
+                                            stintmate_ipc_peer **peer_out);
+
+/**
+ * Starts connecting and waits for the first connection (`Client.connect`).
+ *
+ * # Safety
+ * As [`stintmate_ipc_client_wait_connected`].
+ */
+int32_t stintmate_ipc_client_connect(stintmate_ipc_client *c,
+                                     int64_t timeout_ms,
+                                     stintmate_ipc_peer **peer_out);
 
 /**
  * 1 when the connection is up, else 0.
  *
  * # Safety
- * `client` from `stintmate_ipc_client_new`.
+ * `c` null or live.
  */
-int32_t stintmate_ipc_client_is_connected(stintmate_ipc_client *client);
+int32_t stintmate_ipc_client_is_connected(stintmate_ipc_client *c);
+
+/**
+ * An owned reference to the current connection; `E_NOT_CONNECTED` when there is none.
+ *
+ * # Safety
+ * `c` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_client_peer(stintmate_ipc_client *c, stintmate_ipc_peer **out);
+
+/**
+ * The error of the last failed connection attempt, as `stintmate_ipc_last_error` has it; nil
+ * when the last attempt succeeded (or none was made).
+ *
+ * # Safety
+ * `c` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_client_last_error(stintmate_ipc_client *c, stintmate_ipc_buffer *out);
+
+/**
+ * Sets the hook called, on the hooks thread, after each failed connection attempt, with the
+ * error map. Replaces the previous hook (releasing its `user_data`); a null `cb` clears it.
+ *
+ * # Safety
+ * `c` live; `cb` and `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_on_connect_error(stintmate_ipc_client *c,
+                                       stintmate_ipc_error_cb cb,
+                                       void *user_data,
+                                       stintmate_ipc_release_cb release);
+
+/**
+ * Stops reconnecting and closes the connection; the handle stays valid until
+ * `stintmate_ipc_client_free`.
+ *
+ * # Safety
+ * `c` live.
+ */
+int32_t stintmate_ipc_client_close(stintmate_ipc_client *c);
 
 /**
  * Closes the connection, stops reconnecting and releases the handle.
  *
  * # Safety
- * `client` from `stintmate_ipc_client_new`, not used afterwards; null is ignored.
+ * `c` from `stintmate_ipc_client_new`, not used afterwards; null is ignored.
  */
-void stintmate_ipc_client_free(stintmate_ipc_client *client);
+void stintmate_ipc_client_free(stintmate_ipc_client *c);
 
 /**
- * Calls a method and waits for the result. `params`/`params_len` are MessagePack (length 0:
- * nil). `timeout_ms` is the deadline (0: none). The result is written to `result_out`, to be freed with `stintmate_ipc_free_buffer`.
+ * How long the client waits (milliseconds, before jitter) before the next attempt, chosen by
+ * the `bye` code that ended the last connection or attempt (`code` may be null) and the
+ * failures in a row; -1: give up.
  *
  * # Safety
- * `client` valid; `method` NUL-terminated; `params` valid for `params_len` bytes;
- * `result_out` null or valid for a write.
+ * `code` null or NUL-terminated.
  */
-int32_t stintmate_ipc_call(stintmate_ipc_client *client,
-                           const char *method,
-                           uint32_t version,
-                           const uint8_t *params,
-                           size_t params_len,
-                           uint32_t timeout_ms,
-                           stintmate_ipc_buffer *result_out);
+int64_t stintmate_ipc_reconnect_delay_ms(const char *code, uint32_t attempt);
 
 /**
- * Sends a call and returns it in flight; see `stintmate_ipc_call_wait` and
- * `stintmate_ipc_call_cancel`.
+ * One connection without reconnection (`connect()`): handshake and return the peer. With a
+ * `node` (a client made with `reconnect` 0 whose methods and channels this connection
+ * offers) the connection is that client's; otherwise the connection owns a client of its own
+ * that closes when the last reference to the peer is released. Failures are the attempt's own
+ * error (no `E_NOT_CONNECTED` wrapping).
  *
  * # Safety
- * As [`stintmate_ipc_call`]; `out` valid for a write.
+ * Strings NUL-terminated; `info` and `key` per their structs; `node` null or live; `out`
+ * valid for a write.
  */
-int32_t stintmate_ipc_call_async(stintmate_ipc_client *client,
-                                 const char *method,
-                                 uint32_t version,
-                                 const uint8_t *params,
-                                 size_t params_len,
-                                 uint32_t timeout_ms,
-                                 stintmate_ipc_pending **out);
+int32_t stintmate_ipc_connect(const char *pipe,
+                              const stintmate_ipc_peer_info *info,
+                              const stintmate_ipc_key_source *key,
+                              int64_t timeout_ms,
+                              stintmate_ipc_client *node,
+                              size_t event_queue,
+                              stintmate_ipc_peer **out);
 
 /**
- * Waits for a call in flight, at most `timeout_ms` (`UINT32_MAX`: as long as it takes).
- * `STINTMATE_IPC_E_WAIT_TIMEOUT` when the wait ended first; the call stays in flight and can
- * be waited for again. The outcome is as in `stintmate_ipc_call`.
+ * A synchronous call on the client's current connection; `E_NOT_CONNECTED` when there is
+ * none. See `stintmate_ipc_peer_call`.
  *
  * # Safety
- * `call` valid; `result_out` null or valid for a write.
+ * `c` live; the rest as `stintmate_ipc_peer_call`.
  */
-int32_t stintmate_ipc_call_wait(stintmate_ipc_pending *call,
-                                uint32_t timeout_ms,
-                                stintmate_ipc_buffer *result_out);
+int32_t stintmate_ipc_client_call(stintmate_ipc_client *c,
+                                  const char *method,
+                                  const uint8_t *params,
+                                  size_t len,
+                                  const stintmate_ipc_call_opts *opts,
+                                  stintmate_ipc_buffer *result_out);
 
 /**
- * Gives up on a call: sends `cancel`; the call then fails with `STINTMATE_IPC_E_CANCELLED`.
- * Returns 1 when the cancel took effect, 0 when the answer had already won.
+ * An asynchronous call on the client's current connection.
  *
  * # Safety
- * `call` valid.
+ * As [`stintmate_ipc_client_call`]; `out` valid for a write.
  */
-int32_t stintmate_ipc_call_cancel(stintmate_ipc_pending *call);
+int32_t stintmate_ipc_client_call_async(stintmate_ipc_client *c,
+                                        const char *method,
+                                        const uint8_t *params,
+                                        size_t len,
+                                        const stintmate_ipc_call_opts *opts,
+                                        stintmate_ipc_pending **out);
 
 /**
- * Releases a call handle (the call itself is not cancelled).
+ * Subscribes to a channel of the server now and after every reconnection, until
+ * unsubscribed. Does not wait: see `stintmate_ipc_subscription_wait` and
+ * `stintmate_ipc_subscription_info` (the last error).
  *
  * # Safety
- * `call` from `stintmate_ipc_call_async`, not used afterwards; null is ignored.
+ * `c` live; `channel` NUL-terminated; `opts` per its struct; `out` valid for a write.
  */
-void stintmate_ipc_call_free(stintmate_ipc_pending *call);
-
-/**
- * Subscribes to a channel of the server, now and after every reconnect. `options` is a
- * MessagePack map (length 0: none). `on_delivery` runs on the connection's callback lane, in
- * order; `on_end` (may be null) when the subscription ends. Subscription happens in the
- * background: see `stintmate_ipc_subscription_is_active`.
- *
- * # Safety
- * `client` valid; `channel` NUL-terminated; `options` valid for `options_len` bytes; `out`
- * valid for a write; `user_data` usable from library threads until `unsubscribe`.
- */
-int32_t stintmate_ipc_subscribe(stintmate_ipc_client *client,
-                                const char *channel,
-                                uint32_t version,
-                                const uint8_t *options,
-                                size_t options_len,
-                                stintmate_ipc_delivery_cb on_delivery,
-                                stintmate_ipc_end_cb on_end,
-                                void *user_data,
-                                stintmate_ipc_release_cb release,
-                                stintmate_ipc_subscription **out);
-
-/**
- * 1 when the subscription is established, else 0.
- *
- * # Safety
- * `sub` valid.
- */
-int32_t stintmate_ipc_subscription_is_active(stintmate_ipc_subscription *sub);
-
-/**
- * Ends the subscription and releases the handle. A delivery already running may finish
- * after this returns.
- *
- * # Safety
- * `sub` from `stintmate_ipc_subscribe`, not used afterwards; null is ignored.
- */
-void stintmate_ipc_unsubscribe(stintmate_ipc_subscription *sub);
+int32_t stintmate_ipc_client_subscribe(stintmate_ipc_client *c,
+                                       const char *channel,
+                                       const stintmate_ipc_subscribe_opts *opts,
+                                       stintmate_ipc_subscription **out);
 
 /**
  * Creates an endpoint. `key` null uses the default key file; `opts` may be null (the pipe is
@@ -927,6 +1051,217 @@ int32_t stintmate_ipc_valid_name(const char *name);
 int32_t stintmate_ipc_layout_normalize(const uint8_t *layout,
                                        size_t len,
                                        stintmate_ipc_buffer *out);
+
+/**
+ * A new owned reference to the same connection (null for null).
+ *
+ * # Safety
+ * `peer` null or a live peer.
+ */
+stintmate_ipc_peer *stintmate_ipc_peer_ref(stintmate_ipc_peer *peer);
+
+/**
+ * Releases a reference to a connection (the connection stays up while other references or its
+ * owner exist). Null is ignored.
+ *
+ * # Safety
+ * `peer` from the library, not used afterwards.
+ */
+void stintmate_ipc_peer_free(stintmate_ipc_peer *peer);
+
+/**
+ * An id equal for the references of one connection (0 for null).
+ *
+ * # Safety
+ * `peer` null or a live peer.
+ */
+uint64_t stintmate_ipc_peer_id(const stintmate_ipc_peer *peer);
+
+/**
+ * Who is on the other end: `{app, name, version, process?, meta, pid?, run}`. (Named
+ * `peer_get_info` because the C struct `stintmate_ipc_peer_info` has the other name.)
+ *
+ * # Safety
+ * `peer` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_peer_get_info(const stintmate_ipc_peer *peer, stintmate_ipc_buffer *out);
+
+/**
+ * What the other end declares now (`{methods, channels}`).
+ *
+ * # Safety
+ * `peer` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_peer_decl(const stintmate_ipc_peer *peer, stintmate_ipc_buffer *out);
+
+/**
+ * 1 while the connection is up, else 0.
+ *
+ * # Safety
+ * `peer` null or a live peer.
+ */
+int32_t stintmate_ipc_peer_is_open(const stintmate_ipc_peer *peer);
+
+/**
+ * Waits until the connection is closing or closed: 0, or `E_WAIT_TIMEOUT`.
+ *
+ * # Safety
+ * `peer` live.
+ */
+int32_t stintmate_ipc_peer_wait_closed(const stintmate_ipc_peer *peer, int64_t timeout_ms);
+
+/**
+ * `{code, message}` once the connection is closed, nil while it is open.
+ *
+ * # Safety
+ * `peer` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_peer_close_reason(const stintmate_ipc_peer *peer, stintmate_ipc_buffer *out);
+
+/**
+ * Ends the connection with `bye` (`code` null: `normal`; `message` null: empty).
+ *
+ * # Safety
+ * `peer` live; strings NUL-terminated or null.
+ */
+int32_t stintmate_ipc_peer_close(stintmate_ipc_peer *peer, const char *code, const char *message);
+
+/**
+ * A synchronous call: returns after its last `on_progress` ran. `opts` may be null (version
+ * 1, 5 s).
+ *
+ * # Safety
+ * `peer` live; `method` NUL-terminated; `params` valid for `len` bytes; `opts` per its struct;
+ * `result_out` null or valid for a write.
+ */
+int32_t stintmate_ipc_peer_call(stintmate_ipc_peer *peer,
+                                const char *method,
+                                const uint8_t *params,
+                                size_t len,
+                                const stintmate_ipc_call_opts *opts,
+                                stintmate_ipc_buffer *result_out);
+
+/**
+ * Sends a call and returns it in flight.
+ *
+ * # Safety
+ * As [`stintmate_ipc_peer_call`]; `out` valid for a write.
+ */
+int32_t stintmate_ipc_peer_call_async(stintmate_ipc_peer *peer,
+                                      const char *method,
+                                      const uint8_t *params,
+                                      size_t len,
+                                      const stintmate_ipc_call_opts *opts,
+                                      stintmate_ipc_pending **out);
+
+/**
+ * The id of the request.
+ *
+ * # Safety
+ * `p` null or live.
+ */
+uint64_t stintmate_ipc_call_id(const stintmate_ipc_pending *p);
+
+/**
+ * 1 when the call has ended, else 0.
+ *
+ * # Safety
+ * `p` null or live.
+ */
+int32_t stintmate_ipc_call_is_done(const stintmate_ipc_pending *p);
+
+/**
+ * Waits for a call in flight, at most `timeout_ms`: `E_WAIT_TIMEOUT` when it has not ended
+ * (it stays in flight and can be waited for again); otherwise the call's own status and
+ * result.
+ *
+ * # Safety
+ * `p` live; `result_out` null or valid for a write.
+ */
+int32_t stintmate_ipc_call_wait(stintmate_ipc_pending *p,
+                                int64_t timeout_ms,
+                                stintmate_ipc_buffer *result_out);
+
+/**
+ * Gives up on a call: sends `cancel`; the call then fails with `E_CANCELLED`. Returns 1 when
+ * the cancel took effect, 0 when the answer had already won. `reason` is for the caller's
+ * logs (the protocol's `cancel` carries none) and may be null.
+ *
+ * # Safety
+ * `p` live; `reason` null or NUL-terminated.
+ */
+int32_t stintmate_ipc_call_cancel(stintmate_ipc_pending *p, const char *reason);
+
+/**
+ * Runs `cb` once on the hooks thread when the call ends (soon, when it already has). One
+ * `on_done` per call; `release` runs after the callback (or at once when this fails).
+ *
+ * # Safety
+ * `p` live; `cb` and `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_call_on_done(stintmate_ipc_pending *p,
+                                   stintmate_ipc_done_cb cb,
+                                   void *user_data,
+                                   stintmate_ipc_release_cb release);
+
+/**
+ * Releases a call handle (the call itself is not cancelled). With an `on_done` still to run
+ * the release happens when it has returned. Null is ignored.
+ *
+ * # Safety
+ * `p` from the library, not used afterwards.
+ */
+void stintmate_ipc_call_free(stintmate_ipc_pending *p);
+
+/**
+ * Subscribes through a peer and waits for the owner's answer; fails with its error.
+ *
+ * # Safety
+ * `peer` live; `channel` NUL-terminated; `opts` per its struct; `out` valid for a write.
+ */
+int32_t stintmate_ipc_peer_subscribe(stintmate_ipc_peer *peer,
+                                     const char *channel,
+                                     const stintmate_ipc_subscribe_opts *opts,
+                                     stintmate_ipc_subscription **out);
+
+/**
+ * `{channel, layout?, error?: {status, message, code?}}`: the layout of a stream once it is
+ * live; the error of the last attempt of a client's subscription.
+ *
+ * # Safety
+ * `s` live; `out` valid for a write.
+ */
+int32_t stintmate_ipc_subscription_info(stintmate_ipc_subscription *s, stintmate_ipc_buffer *out);
+
+/**
+ * 1 when the subscription is live on a connection, else 0.
+ *
+ * # Safety
+ * `s` null or live.
+ */
+int32_t stintmate_ipc_subscription_is_active(stintmate_ipc_subscription *s);
+
+/**
+ * Waits for `what` (1: subscribed, 2: ended), at most `timeout_ms`: 0, or `E_WAIT_TIMEOUT`.
+ * For a client's subscription "ended" means the current subscription on a connection ended
+ * (or there is none).
+ *
+ * # Safety
+ * `s` live.
+ */
+int32_t stintmate_ipc_subscription_wait(stintmate_ipc_subscription *s,
+                                        int32_t what,
+                                        int64_t timeout_ms);
+
+/**
+ * Ends the subscription and releases the handle: no callback starts after this returns and
+ * running ones are waited for (unless called from one of them); then `release` runs. Null is
+ * ignored.
+ *
+ * # Safety
+ * `s` from the library, not used afterwards.
+ */
+void stintmate_ipc_unsubscribe(stintmate_ipc_subscription *s);
 
 /**
  * The number of handles handed out and not yet released (a leak check for tests).

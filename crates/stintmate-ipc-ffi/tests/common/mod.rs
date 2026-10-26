@@ -112,9 +112,9 @@ api! {
     fn respond(responder: *mut c_void, result: *const u8, len: usize) -> i32;
     fn client_new(pipe: *const c_char, info: *const PeerInfo, key: *const KeySource, opts: *const c_void, out: *mut *mut c_void) -> i32;
     fn client_start(client: *mut c_void) -> i32;
-    fn client_wait_connected(client: *mut c_void, timeout_ms: u32) -> i32;
+    fn client_wait_connected(client: *mut c_void, timeout_ms: i64, peer_out: *mut *mut c_void) -> i32;
     fn client_free(client: *mut c_void);
-    fn call(client: *mut c_void, method: *const c_char, version: u32, params: *const u8, params_len: usize, timeout_ms: u32, result_out: *mut Buffer) -> i32;
+    fn client_call(client: *mut c_void, method: *const c_char, params: *const u8, params_len: usize, opts: *const CallOpts, result_out: *mut Buffer) -> i32;
 }
 
 fn profile_dir() -> PathBuf {
@@ -273,7 +273,7 @@ impl Rig {
             last_message()
         );
         assert_eq!(unsafe { (a.client_start)(self.client) }, 0);
-        let st = unsafe { (a.client_wait_connected)(self.client, 10_000) };
+        let st = unsafe { (a.client_wait_connected)(self.client, 10_000, std::ptr::null_mut()) };
         assert_eq!(st, 0, "{}", last_message());
     }
 
@@ -299,13 +299,12 @@ impl Rig {
         let n = c(name);
         let mut out = NO_BUFFER;
         let st = unsafe {
-            (api().call)(
+            (api().client_call)(
                 self.client,
                 n.as_ptr(),
-                1,
                 std::ptr::null(),
                 0,
-                timeout_ms,
+                &call_opts(i64::from(timeout_ms)),
                 &mut out,
             )
         };
@@ -317,5 +316,29 @@ impl Rig {
             (api().client_free)(self.client);
             (api().endpoint_free)(self.ep);
         }
+    }
+}
+
+#[repr(C)]
+pub struct CallOpts {
+    pub struct_size: usize,
+    pub version: u32,
+    pub timeout_ms: i64,
+    pub idempotency_key: *const c_char,
+    pub on_progress: *const c_void,
+    pub user_data: *mut c_void,
+    pub release: ReleaseCb,
+}
+
+/// Call options with a deadline (`-1`: none).
+pub fn call_opts(timeout_ms: i64) -> CallOpts {
+    CallOpts {
+        struct_size: size_of::<CallOpts>(),
+        version: 0,
+        timeout_ms,
+        idempotency_key: std::ptr::null(),
+        on_progress: std::ptr::null(),
+        user_data: std::ptr::null_mut(),
+        release: None,
     }
 }
