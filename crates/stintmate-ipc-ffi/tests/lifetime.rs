@@ -111,7 +111,7 @@ fn remove_method_releases_user_data() {
     rig.go();
     assert_eq!(rig.call("t.echo", 5000).0, 0);
     assert_eq!(
-        unsafe { (a.endpoint_remove_method)(rig.ep, c"t.echo".as_ptr()) },
+        unsafe { (a.remove_method)((a.endpoint_node)(rig.ep), c"t.echo".as_ptr()) },
         0
     );
     wait_for("the release", || p.released.load(Ordering::SeqCst) == 1);

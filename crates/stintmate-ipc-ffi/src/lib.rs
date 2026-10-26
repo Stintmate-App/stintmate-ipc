@@ -36,6 +36,7 @@
 mod client;
 mod endpoint;
 mod keys;
+mod node;
 mod peer;
 mod runtime;
 #[cfg(test)]

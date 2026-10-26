@@ -96,6 +96,7 @@ pub struct stintmate_ipc_client(
     pub(crate) Client,
     #[allow(dead_code)] pub(crate) Handle,
     pub(crate) Arc<ClientShared>,
+    pub(crate) crate::node::stintmate_ipc_node,
 );
 
 /// Options of a client (spec 2.7); `struct_size` is `sizeof`.
@@ -211,7 +212,10 @@ pub unsafe extern "C" fn stintmate_ipc_client_new(
         // SAFETY: `out` is valid for a write.
         unsafe {
             out.write(Box::into_raw(Box::new(stintmate_ipc_client(
-                c, handle, shared,
+                c.clone(),
+                handle,
+                shared,
+                crate::node::stintmate_ipc_node::new(stintmate_ipc::blocking::Node::clone(&c)),
             ))))
         };
         Ok(())

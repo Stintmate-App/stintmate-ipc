@@ -46,8 +46,57 @@ pub struct KeySource {
 pub struct EndpointOpts {
     pub struct_size: usize,
     pub pipe: *const c_char,
+    pub registry: *const c_char,
+    pub handshake_timeout_ms: i64,
     pub handler_threads: u32,
+    pub heartbeat_ms: u32,
+    pub event_queue: usize,
+    pub event_queue_bytes: usize,
+    pub max_inflight: usize,
+    pub features: *const u8,
+    pub features_len: usize,
 }
+
+impl EndpointOpts {
+    pub fn new(pipe: *const c_char, handler_threads: u32) -> Self {
+        Self {
+            struct_size: size_of::<Self>(),
+            pipe,
+            registry: std::ptr::null(),
+            handshake_timeout_ms: -1,
+            handler_threads,
+            heartbeat_ms: 0,
+            event_queue: 0,
+            event_queue_bytes: 0,
+            max_inflight: 0,
+            features: std::ptr::null(),
+            features_len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct MethodOpts {
+    pub struct_size: usize,
+    pub flags: u32,
+    pub versions: *const u32,
+    pub n_versions: usize,
+    pub idempotency_ttl_ms: i64,
+    pub doc: *const c_char,
+    pub params_schema: *const u8,
+    pub params_schema_len: usize,
+    pub result_schema: *const u8,
+    pub result_schema_len: usize,
+}
+
+pub type PeerCb = Option<unsafe extern "C-unwind" fn(*mut c_void, i32, *mut c_void)>;
+pub type AcceptCb = Option<unsafe extern "C-unwind" fn(*mut c_void, *const u8, usize) -> i32>;
+pub type SubscribeCb = Option<
+    unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, *const u8, usize) -> i32,
+>;
+pub type ActiveCb = Option<unsafe extern "C-unwind" fn(*mut c_void, i32)>;
+pub type HandshakeFailedCb =
+    Option<unsafe extern "C-unwind" fn(*mut c_void, i64, *const u8, usize)>;
 
 pub type ReleaseCb = Option<unsafe extern "C-unwind" fn(*mut c_void)>;
 pub type ThreadCb = Option<unsafe extern "C-unwind" fn(*mut c_void)>;
@@ -105,11 +154,40 @@ api! {
     fn layout_normalize(layout: *const u8, len: usize, out: *mut Buffer) -> i32;
     fn endpoint_new(info: *const PeerInfo, key: *const KeySource, opts: *const EndpointOpts, out: *mut *mut c_void) -> i32;
     fn endpoint_start(ep: *mut c_void) -> i32;
-    fn endpoint_stop(ep: *mut c_void) -> i32;
+    fn endpoint_stop(ep: *mut c_void, code: *const c_char, message: *const c_char) -> i32;
+    fn endpoint_node(ep: *mut c_void) -> *mut c_void;
+    fn endpoint_info(ep: *mut c_void, out: *mut Buffer) -> i32;
+    fn on_handshake_failed(ep: *mut c_void, cb: HandshakeFailedCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
+    fn client_node(client: *mut c_void) -> *mut c_void;
     fn endpoint_free(ep: *mut c_void);
-    fn endpoint_method(ep: *mut c_void, name: *const c_char, flags: u32, versions: *const u32, n_versions: usize, handler: HandlerCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
-    fn endpoint_remove_method(ep: *mut c_void, name: *const c_char) -> i32;
-    fn respond(responder: *mut c_void, result: *const u8, len: usize) -> i32;
+    fn method(node: *mut c_void, name: *const c_char, opts: *const MethodOpts, handler: HandlerCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
+    fn remove_method(node: *mut c_void, name: *const c_char) -> i32;
+    fn declarations(node: *mut c_void, out: *mut Buffer) -> i32;
+    fn peers(node: *mut c_void, out: *mut *mut c_void, cap: usize, count: *mut usize) -> i32;
+    fn peer_free(peer: *mut c_void);
+    fn on_peer(node: *mut c_void, cb: PeerCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
+    fn request_info(req: *const c_void, out: *mut Buffer) -> i32;
+    fn request_peer(req: *const c_void) -> *mut c_void;
+    fn request_is_cancelled(req: *const c_void) -> i32;
+    fn request_wait_cancelled(req: *const c_void, timeout_ms: i64) -> i32;
+    fn request_remaining_ms(req: *const c_void) -> i64;
+    fn request_progress(req: *mut c_void, data: *const u8, len: usize, extend_ms: i64) -> i32;
+    fn respond(req: *mut c_void, result: *const u8, len: usize) -> i32;
+    fn respond_error(req: *mut c_void, code: *const c_char, message: *const c_char, details: *const u8, details_len: usize, retry_ms: i64) -> i32;
+    fn event_channel(node: *mut c_void, name: *const c_char, versions: *const u32, n_versions: usize, out: *mut *mut c_void) -> i32;
+    fn state_channel(node: *mut c_void, name: *const c_char, initial: *const u8, initial_len: usize, versions: *const u32, n_versions: usize, out: *mut *mut c_void) -> i32;
+    fn stream_channel(node: *mut c_void, name: *const c_char, layout: *const u8, layout_len: usize, versions: *const u32, n_versions: usize, rate_hz: f64, queue: usize, out: *mut *mut c_void) -> i32;
+    fn channel_info(ch: *mut c_void, out: *mut Buffer) -> i32;
+    fn channel_subscribers(ch: *mut c_void) -> i64;
+    fn channel_is_active(ch: *mut c_void) -> i32;
+    fn channel_close(ch: *mut c_void, code: *const c_char, message: *const c_char) -> i32;
+    fn channel_free(ch: *mut c_void);
+    fn publish(ch: *mut c_void, data: *const u8, len: usize, ts_ns: i64, version: u32, accept: AcceptCb, user_data: *mut c_void, queued_out: *mut usize) -> i32;
+    fn state_get(ch: *mut c_void, out: *mut Buffer) -> i32;
+    fn stream_send(ch: *mut c_void, body: *const u8, len: usize, t_ns: i64, sent_out: *mut usize) -> i32;
+    fn refuse(ctx: *mut c_void, code: *const c_char, message: *const c_char, details: *const u8, details_len: usize) -> i32;
+    fn on_subscribe(ch: *mut c_void, cb: SubscribeCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
+    fn on_active(ch: *mut c_void, cb: ActiveCb, user_data: *mut c_void, release: ReleaseCb) -> i32;
     fn client_new(pipe: *const c_char, info: *const PeerInfo, key: *const KeySource, opts: *const c_void, out: *mut *mut c_void) -> i32;
     fn client_start(client: *mut c_void) -> i32;
     fn client_wait_connected(client: *mut c_void, timeout_ms: i64, peer_out: *mut *mut c_void) -> i32;
@@ -241,11 +319,7 @@ impl Rig {
             meta: std::ptr::null(),
             meta_len: 0,
         };
-        let opts = EndpointOpts {
-            struct_size: size_of::<EndpointOpts>(),
-            pipe: pipe.as_ptr(),
-            handler_threads: 2,
-        };
+        let opts = EndpointOpts::new(pipe.as_ptr(), 2);
         let mut ep = std::ptr::null_mut();
         let st = unsafe { (a.endpoint_new)(&info(&app_s), &ks, &opts, &mut ep) };
         assert_eq!(st, 0, "{}", last_message());
@@ -280,12 +354,10 @@ impl Rig {
     pub fn method(&self, name: &str, cb: HandlerCb, user: *mut c_void, release: ReleaseCb) {
         let n = c(name);
         let st = unsafe {
-            (api().endpoint_method)(
-                self.ep,
+            (api().method)(
+                (api().endpoint_node)(self.ep),
                 n.as_ptr(),
-                0,
                 std::ptr::null(),
-                0,
                 cb,
                 user,
                 release,
@@ -341,4 +413,182 @@ pub fn call_opts(timeout_ms: i64) -> CallOpts {
         user_data: std::ptr::null_mut(),
         release: None,
     }
+}
+
+// ---------------------------------------------------------------------------- core counterparts
+
+pub use stintmate_ipc::blocking as ipc;
+pub use stintmate_ipc::codec::{self, Value};
+use stintmate_ipc::handshake::PeerInfo as CorePeerInfo;
+use stintmate_ipc::keyfile::KeySource as CoreKeySource;
+
+pub fn mp(v: &Value) -> Vec<u8> {
+    codec::encode(v).unwrap()
+}
+
+pub fn val(buf: Buffer) -> Value {
+    codec::decode(&take(buf)).unwrap()
+}
+
+pub fn key_of(v: &Value, k: &str) -> Value {
+    codec::get(v, k).cloned().unwrap_or(Value::Nil)
+}
+
+pub fn new_key() -> [u8; 32] {
+    std::array::from_fn(|i| stintmate_ipc::handshake::new_nonce()[i % 32])
+}
+
+pub fn peer_info(app: &CString) -> PeerInfo {
+    PeerInfo {
+        app: app.as_ptr(),
+        name: std::ptr::null(),
+        version: std::ptr::null(),
+        process: std::ptr::null(),
+        meta: std::ptr::null(),
+        meta_len: 0,
+    }
+}
+
+/// A log the callbacks write to (its address is the `user_data`).
+#[derive(Default)]
+pub struct Log {
+    pub lines: Mutex<Vec<String>>,
+    pub ptrs: Mutex<Vec<usize>>,
+    pub released: AtomicUsize,
+}
+
+impl Log {
+    pub fn ud(self: &std::sync::Arc<Self>) -> *mut c_void {
+        std::sync::Arc::as_ptr(self) as *mut c_void
+    }
+    pub fn push(&self, s: impl Into<String>) {
+        self.lines.lock().unwrap().push(s.into());
+    }
+    pub fn lines(&self) -> Vec<String> {
+        self.lines.lock().unwrap().clone()
+    }
+}
+
+/// # Safety
+/// `p` is the address of a live `Log`.
+pub unsafe fn log<'a>(p: *mut c_void) -> &'a Log {
+    unsafe { &*(p as *const Log) }
+}
+
+pub unsafe extern "C-unwind" fn release_log(p: *mut c_void) {
+    unsafe { log(p) }.released.fetch_add(1, Ordering::SeqCst);
+}
+
+/// A library endpoint (through the DLL) and a core client of it.
+pub struct EpFix {
+    pub ep: *mut c_void,
+    pub node: *mut c_void,
+    pub core: ipc::Client,
+    pub pipe: CString,
+    pub key: [u8; 32],
+}
+
+impl EpFix {
+    pub fn new() -> EpFix {
+        Self::with(|_| {})
+    }
+
+    pub fn with(tune: impl FnOnce(&mut EndpointOpts)) -> EpFix {
+        let a = api();
+        let pipe = c(&format!("stintmate-ffi-t2-{}", random_tag()));
+        let key = new_key();
+        let ks = key_source(&key);
+        let app = c("server");
+        let mut opts = EndpointOpts::new(pipe.as_ptr(), 2);
+        tune(&mut opts);
+        let mut ep = std::ptr::null_mut();
+        let st = unsafe { (a.endpoint_new)(&peer_info(&app), &ks, &opts, &mut ep) };
+        assert_eq!(st, 0, "{}", last_message());
+        let node = unsafe { (a.endpoint_node)(ep) };
+        assert!(!node.is_null());
+        let core = ipc::Client::new(
+            pipe.to_str().unwrap(),
+            CorePeerInfo::new("tester"),
+            CoreKeySource::Bytes(key),
+        )
+        .unwrap();
+        EpFix {
+            ep,
+            node,
+            core,
+            pipe,
+            key,
+        }
+    }
+
+    /// Starts the endpoint and the core client; returns the client's peer.
+    pub fn start(&self) -> ipc::Peer {
+        assert_eq!(
+            unsafe { (api().endpoint_start)(self.ep) },
+            0,
+            "{}",
+            last_message()
+        );
+        self.core.start();
+        self.core.wait_connected(Duration::from_secs(10)).unwrap()
+    }
+
+    pub fn free(self) {
+        self.core.close();
+        unsafe { (api().endpoint_free)(self.ep) };
+    }
+}
+
+/// A core endpoint and a library client (through the DLL) of it.
+pub struct ClientFix {
+    pub core: ipc::Endpoint,
+    pub client: *mut c_void,
+    pub node: *mut c_void,
+}
+
+impl ClientFix {
+    pub fn new() -> ClientFix {
+        let a = api();
+        let pipe = c(&format!("stintmate-ffi-t2c-{}", random_tag()));
+        let key = new_key();
+        let core = ipc::Endpoint::builder(CorePeerInfo::new("tester"), CoreKeySource::Bytes(key))
+            .pipe(pipe.to_str().unwrap())
+            .build()
+            .unwrap();
+        let ks = key_source(&key);
+        let app = c("offerer");
+        let mut client = std::ptr::null_mut();
+        let st = unsafe {
+            (a.client_new)(
+                pipe.as_ptr(),
+                &peer_info(&app),
+                &ks,
+                std::ptr::null(),
+                &mut client,
+            )
+        };
+        assert_eq!(st, 0, "{}", last_message());
+        let node = unsafe { (a.client_node)(client) };
+        assert!(!node.is_null());
+        ClientFix { core, client, node }
+    }
+
+    /// Starts both and returns the core endpoint's peer (the client).
+    pub fn start(&self) -> ipc::Peer {
+        self.core.start().unwrap();
+        assert_eq!(unsafe { (api().client_start)(self.client) }, 0);
+        wait_for("the client", || !self.core.peers().is_empty());
+        self.core.peers().remove(0)
+    }
+
+    pub fn free(self) {
+        unsafe { (api().client_free)(self.client) };
+        self.core.stop();
+    }
+}
+
+/// The leak counters must be back to zero.
+pub fn assert_clean() {
+    wait_for("no live handles", || unsafe { (api().live_handles)() } == 0);
+    assert_eq!(unsafe { (api().live_buffers)() }, 0);
 }

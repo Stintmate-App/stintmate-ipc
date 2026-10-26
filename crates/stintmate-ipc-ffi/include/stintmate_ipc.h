@@ -181,9 +181,31 @@
 #define STINTMATE_IPC_METHOD_IDEMPOTENT 4
 
 /**
- * `ts_ns` value of `stintmate_ipc_publish` meaning "now".
+ * `STINTMATE_IPC_METHOD_NO_IDEMPOTENCY_CACHE`: an idempotent method whose answers the library
+ * does not keep (the handler deduplicates).
+ */
+#define STINTMATE_IPC_METHOD_NO_IDEMPOTENCY_CACHE 8
+
+/**
+ * `ts_ns` value of `stintmate_ipc_publish` and `t_ns` of `stintmate_ipc_stream_send`
+ * meaning "now".
  */
 #define STINTMATE_IPC_TS_NOW INT64_MIN
+
+/**
+ * `event` of a peer hook: a connection was established.
+ */
+#define STINTMATE_IPC_PEER_CONNECT 1
+
+/**
+ * `event` of a peer hook: a connection ended.
+ */
+#define STINTMATE_IPC_PEER_DISCONNECT 2
+
+/**
+ * `event` of a peer hook: a peer sent new declarations.
+ */
+#define STINTMATE_IPC_PEER_REDECLARE 3
 
 /**
  * `STINTMATE_IPC_DELIVERY_SNAPSHOT`: the state snapshot of the subscription.
@@ -206,7 +228,7 @@
 #define STINTMATE_IPC_KIND_SAMPLE 1
 
 /**
- * A channel offered by an endpoint.
+ * A channel offered by a node.
  */
 typedef struct stintmate_ipc_channel stintmate_ipc_channel;
 
@@ -221,6 +243,16 @@ typedef struct stintmate_ipc_client stintmate_ipc_client;
 typedef struct stintmate_ipc_endpoint stintmate_ipc_endpoint;
 
 /**
+ * The context of a subscribe hook, used to refuse.
+ */
+typedef struct stintmate_ipc_hook_ctx stintmate_ipc_hook_ctx;
+
+/**
+ * What an endpoint or a client offers; borrowed from its owner, never freed by the caller.
+ */
+typedef struct stintmate_ipc_node stintmate_ipc_node;
+
+/**
  * One connection (a reference to it: `stintmate_ipc_peer_ref` makes more).
  */
 typedef struct stintmate_ipc_peer stintmate_ipc_peer;
@@ -231,10 +263,11 @@ typedef struct stintmate_ipc_peer stintmate_ipc_peer;
 typedef struct stintmate_ipc_pending stintmate_ipc_pending;
 
 /**
- * The way a method handler answers: exactly one of `stintmate_ipc_respond` or
- * `stintmate_ipc_respond_error` must be called, from the handler or later from any thread.
+ * A call being handled (one per call). Exactly one of `stintmate_ipc_respond` or
+ * `stintmate_ipc_respond_error` must be called, from the handler or later from any thread; it
+ * consumes the request.
  */
-typedef struct stintmate_ipc_responder stintmate_ipc_responder;
+typedef struct stintmate_ipc_request stintmate_ipc_request;
 
 /**
  * A subscription (of a peer, or kept by a client across reconnections).
@@ -482,8 +515,8 @@ typedef struct {
 } stintmate_ipc_subscribe_opts;
 
 /**
- * Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. The fields after
- * `handler_threads` are added by T2.
+ * Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. Zero (or null) fields mean the
+ * default.
  */
 typedef struct {
   /**
@@ -495,20 +528,137 @@ typedef struct {
    */
   const char *pipe;
   /**
+   * The registry folder the endpoint writes its descriptor to (null: none).
+   */
+  const char *registry;
+  /**
+   * How long a client has to finish the handshake; -1 (or 0): the default.
+   */
+  int64_t handshake_timeout_ms;
+  /**
    * The handler pool size; 0: 8.
    */
   uint32_t handler_threads;
+  /**
+   * The heartbeat period in milliseconds; 0: the default.
+   */
+  uint32_t heartbeat_ms;
+  /**
+   * Events queued per subscriber; 0: 1024.
+   */
+  size_t event_queue;
+  /**
+   * Bytes queued per subscriber; 0: 8 MiB.
+   */
+  size_t event_queue_bytes;
+  /**
+   * Requests in flight per connection; 0: the default.
+   */
+  size_t max_inflight;
+  /**
+   * A MessagePack array of feature names to offer (null: none).
+   */
+  const uint8_t *features;
+  /**
+   * The length of `features`.
+   */
+  size_t features_len;
 } stintmate_ipc_endpoint_opts;
 
 /**
- * A method handler. It receives the params as MessagePack (valid only during the call) and
- * the responder, and answers through it. The handler's pool thread waits for the answer (up
- * to the caller's deadline), so answer promptly.
+ * Called when a client fails its handshake: `pid` is its process id (-1: unknown), `error`
+ * the error map (`{status, message, code?, ...}`, as `stintmate_ipc_last_error`), valid only
+ * during the call.
+ */
+typedef void (*stintmate_ipc_handshake_failed_cb)(void *user_data,
+                                                  int64_t pid,
+                                                  const uint8_t *error,
+                                                  size_t len);
+
+/**
+ * Options of a method (spec 2.5); `struct_size` is `sizeof`.
+ */
+typedef struct {
+  /**
+   * `sizeof` this struct.
+   */
+  size_t struct_size;
+  /**
+   * `STINTMATE_IPC_METHOD_*` flags.
+   */
+  uint32_t flags;
+  /**
+   * The versions offered (null/0: version 1).
+   */
+  const uint32_t *versions;
+  /**
+   * The number of versions.
+   */
+  size_t n_versions;
+  /**
+   * How long answers of an idempotent method are kept; -1 (or 0): the default.
+   */
+  int64_t idempotency_ttl_ms;
+  /**
+   * One line for people (null: none).
+   */
+  const char *doc;
+  /**
+   * JSON Schema of the params as MessagePack (null: none).
+   */
+  const uint8_t *params_schema;
+  /**
+   * The length of `params_schema`.
+   */
+  size_t params_schema_len;
+  /**
+   * JSON Schema of the result as MessagePack (null: none).
+   */
+  const uint8_t *result_schema;
+  /**
+   * The length of `result_schema`.
+   */
+  size_t result_schema_len;
+} stintmate_ipc_method_opts;
+
+/**
+ * A method handler. It receives the request and the params as MessagePack (valid only during
+ * the call), and answers through the request. The handler's pool thread waits for the answer
+ * (up to the caller's deadline), so answer promptly.
  */
 typedef void (*stintmate_ipc_handler_cb)(void *user_data,
-                                         stintmate_ipc_responder *responder,
+                                         stintmate_ipc_request *req,
                                          const uint8_t *params,
                                          size_t params_len);
+
+/**
+ * A peer hook: `event` is `STINTMATE_IPC_PEER_*`; `peer` is borrowed for the call
+ * (`stintmate_ipc_peer_ref` keeps it).
+ */
+typedef void (*stintmate_ipc_peer_cb)(void *user_data, int32_t event, stintmate_ipc_peer *peer);
+
+/**
+ * Chooses subscriptions for `stintmate_ipc_publish`: runs on the calling thread once per
+ * subscription with the view `{peer: {app, name, version, process?, meta?}, pid?, version,
+ * options, connection: <peer id>}`; returns 1 to send. It must be quick.
+ */
+typedef int32_t (*stintmate_ipc_accept_cb)(void *user_data, const uint8_t *view, size_t len);
+
+/**
+ * Runs before a subscription is accepted, on the handler pool, with
+ * `{peer: <peer id>, info, version, options}`. Return 0 to accept; to refuse call
+ * `stintmate_ipc_refuse` and return nonzero. `peer` is borrowed for the call.
+ */
+typedef int32_t (*stintmate_ipc_subscribe_cb)(void *user_data,
+                                              stintmate_ipc_hook_ctx *ctx,
+                                              stintmate_ipc_peer *peer,
+                                              const uint8_t *req,
+                                              size_t len);
+
+/**
+ * Called with 1 when the first subscriber comes and 0 when the last one leaves.
+ */
+typedef void (*stintmate_ipc_active_cb)(void *user_data, int32_t active);
 
 /**
  * Called once, on the hooks thread, when a call ends. `p` is the call's handle: it is valid
@@ -756,7 +906,7 @@ int32_t stintmate_ipc_client_subscribe(stintmate_ipc_client *c,
 
 /**
  * Creates an endpoint. `key` null uses the default key file; `opts` may be null (the pipe is
- * derived from the app id and process, the handler pool has 8 threads).
+ * derived from the app id and process; defaults for everything else).
  *
  * # Safety
  * `info`, `key` and `opts` per their structs; `out` valid for a write.
@@ -767,6 +917,15 @@ int32_t stintmate_ipc_endpoint_new(const stintmate_ipc_peer_info *info,
                                    stintmate_ipc_endpoint **out);
 
 /**
+ * The endpoint's node, to offer methods and channels on. Borrowed: valid until
+ * `stintmate_ipc_endpoint_free`, never freed by the caller (null on a null endpoint).
+ *
+ * # Safety
+ * `ep` valid.
+ */
+stintmate_ipc_node *stintmate_ipc_endpoint_node(stintmate_ipc_endpoint *ep);
+
+/**
  * Creates the pipe and starts serving. Declare methods and channels before or after.
  *
  * # Safety
@@ -775,160 +934,44 @@ int32_t stintmate_ipc_endpoint_new(const stintmate_ipc_peer_info *info,
 int32_t stintmate_ipc_endpoint_start(stintmate_ipc_endpoint *ep);
 
 /**
- * The pipe path of the endpoint, UTF-8 without NUL.
+ * `{path, short_name, run, registry?, info: {app, name, version, process?, meta?}}`.
  *
  * # Safety
  * `ep` valid; `out` valid for a write.
  */
-int32_t stintmate_ipc_endpoint_path(stintmate_ipc_endpoint *ep, stintmate_ipc_buffer *out);
+int32_t stintmate_ipc_endpoint_info(stintmate_ipc_endpoint *ep, stintmate_ipc_buffer *out);
 
 /**
- * Stops serving, says `bye` to every peer and ends the handler pool.
+ * Stops serving, says `bye` to every peer (with `code`, default `shutting_down`, and
+ * `message`) and ends the handler pool. The handle stays valid until
+ * `stintmate_ipc_endpoint_free`.
  *
  * # Safety
- * `ep` valid.
+ * `ep` valid; strings NUL-terminated or null.
  */
-int32_t stintmate_ipc_endpoint_stop(stintmate_ipc_endpoint *ep);
+int32_t stintmate_ipc_endpoint_stop(stintmate_ipc_endpoint *ep,
+                                    const char *code,
+                                    const char *message);
 
 /**
- * Stops the endpoint (when it still serves) and releases the handle.
+ * Sets the hook called, on the hooks thread and in order, when a client fails its handshake.
+ * Replaces the previous hook (releasing its `user_data`); a null `cb` clears it.
+ *
+ * # Safety
+ * `ep` valid; `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_on_handshake_failed(stintmate_ipc_endpoint *ep,
+                                          stintmate_ipc_handshake_failed_cb cb,
+                                          void *user_data,
+                                          stintmate_ipc_release_cb release);
+
+/**
+ * Stops the endpoint (when it still serves) and releases the handle (and its node).
  *
  * # Safety
  * `ep` from `stintmate_ipc_endpoint_new`, not used afterwards; null is ignored.
  */
 void stintmate_ipc_endpoint_free(stintmate_ipc_endpoint *ep);
-
-/**
- * Offers a method. `versions` null/0 offers version 1. The handler runs on the handler pool
- * (or the callback lane with `STINTMATE_IPC_METHOD_INLINE`), never on a runtime thread; a
- * panic that unwinds out of it answers `internal`.
- *
- * # Safety
- * `ep` valid; `name` NUL-terminated; `versions` valid for `n_versions` values;
- * `user_data` usable from library threads while the method is offered.
- */
-int32_t stintmate_ipc_endpoint_method(stintmate_ipc_endpoint *ep,
-                                      const char *name,
-                                      uint32_t flags,
-                                      const uint32_t *versions,
-                                      size_t n_versions,
-                                      stintmate_ipc_handler_cb handler,
-                                      void *user_data,
-                                      stintmate_ipc_release_cb release);
-
-/**
- * Withdraws a method.
- *
- * # Safety
- * `ep` valid; `name` NUL-terminated.
- */
-int32_t stintmate_ipc_endpoint_remove_method(stintmate_ipc_endpoint *ep, const char *name);
-
-/**
- * 1 when the caller of this request sent `cancel` or went away (stop and answer anything).
- *
- * # Safety
- * `responder` valid and not yet used to answer.
- */
-int32_t stintmate_ipc_responder_is_cancelled(const stintmate_ipc_responder *responder);
-
-/**
- * Answers a call with a result (MessagePack; length 0: nil). Consumes the responder.
- *
- * # Safety
- * `responder` from a handler callback, answered exactly once; `result` valid for
- * `result_len` bytes.
- */
-int32_t stintmate_ipc_respond(stintmate_ipc_responder *responder,
-                              const uint8_t *result,
-                              size_t result_len);
-
-/**
- * Answers a call with an error `code` and `message`, and optional MessagePack `details`
- * (length 0: none). Consumes the responder.
- *
- * # Safety
- * As [`stintmate_ipc_respond`]; strings NUL-terminated.
- */
-int32_t stintmate_ipc_respond_error(stintmate_ipc_responder *responder,
-                                    const char *code,
-                                    const char *message,
-                                    const uint8_t *details,
-                                    size_t details_len);
-
-/**
- * Declares an event channel.
- *
- * # Safety
- * `ep` valid; `name` NUL-terminated; `versions` valid for `n_versions` values; `out` valid
- * for a write.
- */
-int32_t stintmate_ipc_event_channel(stintmate_ipc_endpoint *ep,
-                                    const char *name,
-                                    const uint32_t *versions,
-                                    size_t n_versions,
-                                    stintmate_ipc_channel **out);
-
-/**
- * Declares a state channel with an initial value (MessagePack; length 0: nil).
- *
- * # Safety
- * As [`stintmate_ipc_event_channel`]; `initial` valid for `initial_len` bytes.
- */
-int32_t stintmate_ipc_state_channel(stintmate_ipc_endpoint *ep,
-                                    const char *name,
-                                    const uint8_t *initial,
-                                    size_t initial_len,
-                                    const uint32_t *versions,
-                                    size_t n_versions,
-                                    stintmate_ipc_channel **out);
-
-/**
- * Declares a stream channel. `layout` is the MessagePack form of the layout (the `layout`
- * map of a stream declaration). `rate_hz` 0 means unlimited; `queue` 0 the default ring.
- *
- * # Safety
- * As [`stintmate_ipc_event_channel`]; `layout` valid for `layout_len` bytes.
- */
-int32_t stintmate_ipc_stream_channel(stintmate_ipc_endpoint *ep,
-                                     const char *name,
-                                     const uint8_t *layout,
-                                     size_t layout_len,
-                                     const uint32_t *versions,
-                                     size_t n_versions,
-                                     double rate_hz,
-                                     size_t queue,
-                                     stintmate_ipc_channel **out);
-
-/**
- * Publishes on a channel. Event channel: `data` is the MessagePack event. State channel:
- * `data` is the MessagePack new state (coalesced for slow subscribers). Stream channel:
- * `data` is the raw packed body of the layout. `ts_ns` is the source timestamp
- * (`STINTMATE_IPC_TS_NOW`: now; ignored by state channels).
- *
- * # Safety
- * `ch` valid; `data` valid for `len` bytes.
- */
-int32_t stintmate_ipc_publish(stintmate_ipc_channel *ch,
-                              const uint8_t *data,
-                              size_t len,
-                              int64_t ts_ns);
-
-/**
- * The number of subscribers of the channel (negative on a bad handle).
- *
- * # Safety
- * `ch` valid.
- */
-int64_t stintmate_ipc_channel_subscribers(stintmate_ipc_channel *ch);
-
-/**
- * Releases the channel handle (the channel itself lives as long as the endpoint).
- *
- * # Safety
- * `ch` from a channel constructor, not used afterwards; null is ignored.
- */
-void stintmate_ipc_channel_free(stintmate_ipc_channel *ch);
 
 /**
  * Reads the key file at `path`, creating it first when missing (atomic, never replacing).
@@ -1051,6 +1094,318 @@ int32_t stintmate_ipc_valid_name(const char *name);
 int32_t stintmate_ipc_layout_normalize(const uint8_t *layout,
                                        size_t len,
                                        stintmate_ipc_buffer *out);
+
+/**
+ * Offers a method on a node (an endpoint's or a client's). The handler runs on the handler
+ * pool (or the callback lane with `STINTMATE_IPC_METHOD_INLINE`), never on a runtime thread;
+ * a panic that unwinds out of it answers `internal`. Offering a name again replaces the
+ * method (the previous `user_data` is released).
+ *
+ * # Safety
+ * `node` valid; `name` NUL-terminated; `opts` null or per its struct; `user_data` usable from
+ * library threads while the method is offered.
+ */
+int32_t stintmate_ipc_method(stintmate_ipc_node *node,
+                             const char *name,
+                             const stintmate_ipc_method_opts *opts,
+                             stintmate_ipc_handler_cb handler,
+                             void *user_data,
+                             stintmate_ipc_release_cb release);
+
+/**
+ * Withdraws a method.
+ *
+ * # Safety
+ * `node` valid; `name` NUL-terminated.
+ */
+int32_t stintmate_ipc_remove_method(stintmate_ipc_node *node, const char *name);
+
+/**
+ * What the node offers now, as the `decl` map `{methods: {...}, channels: {...}}`.
+ *
+ * # Safety
+ * `node` valid; `out` valid for a write.
+ */
+int32_t stintmate_ipc_declarations(stintmate_ipc_node *node, stintmate_ipc_buffer *out);
+
+/**
+ * Owned references to the open connections: at most `cap` are written to `out`; `*count` is
+ * the total. Release each with `stintmate_ipc_peer_free`.
+ *
+ * # Safety
+ * `node` valid; `out` valid for `cap` writes (or null with `cap` 0); `count` valid for a
+ * write.
+ */
+int32_t stintmate_ipc_peers(stintmate_ipc_node *node,
+                            stintmate_ipc_peer **out,
+                            size_t cap,
+                            size_t *count);
+
+/**
+ * Sets the hook called, on the hooks thread and in order, when a connection is established,
+ * ends, or its peer sends new declarations. Replaces the previous hook (releasing its
+ * `user_data`); a null `cb` clears it.
+ *
+ * # Safety
+ * `node` valid; `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_on_peer(stintmate_ipc_node *node,
+                              stintmate_ipc_peer_cb cb,
+                              void *user_data,
+                              stintmate_ipc_release_cb release);
+
+/**
+ * `{id, method, version, idempotency_key?, remaining_ms?}` of a request.
+ *
+ * # Safety
+ * `req` valid and not yet answered; `out` valid for a write.
+ */
+int32_t stintmate_ipc_request_info(const stintmate_ipc_request *req, stintmate_ipc_buffer *out);
+
+/**
+ * An owned reference to the connection the request arrived on (null on a bad request).
+ * Release it with `stintmate_ipc_peer_free`.
+ *
+ * # Safety
+ * `req` valid and not yet answered.
+ */
+stintmate_ipc_peer *stintmate_ipc_request_peer(const stintmate_ipc_request *req);
+
+/**
+ * 1 when the caller sent `cancel` or went away (stop and answer anything), else 0.
+ *
+ * # Safety
+ * `req` valid and not yet answered.
+ */
+int32_t stintmate_ipc_request_is_cancelled(const stintmate_ipc_request *req);
+
+/**
+ * Waits until the request is cancelled (`STINTMATE_IPC_OK`) or `timeout_ms` passes
+ * (`STINTMATE_IPC_E_WAIT_TIMEOUT`). Call it from a thread that is not a library thread's
+ * lane unless the wait is short.
+ *
+ * # Safety
+ * `req` valid and not yet answered.
+ */
+int32_t stintmate_ipc_request_wait_cancelled(const stintmate_ipc_request *req, int64_t timeout_ms);
+
+/**
+ * Milliseconds left before the caller's deadline (0 when passed), or -1 when there is none.
+ *
+ * # Safety
+ * `req` valid and not yet answered.
+ */
+int64_t stintmate_ipc_request_remaining_ms(const stintmate_ipc_request *req);
+
+/**
+ * Tells the caller the request is alive: `data` is a report (MessagePack, length 0: none),
+ * `extend_ms` gives the caller a new deadline that far from now (-1: no).
+ *
+ * # Safety
+ * `req` valid and not yet answered; `data` valid for `len` bytes.
+ */
+int32_t stintmate_ipc_request_progress(stintmate_ipc_request *req,
+                                       const uint8_t *data,
+                                       size_t len,
+                                       int64_t extend_ms);
+
+/**
+ * Answers a call with a result (MessagePack; length 0: nil). Consumes the request.
+ *
+ * # Safety
+ * `req` from a handler callback, answered exactly once; `result` valid for `len` bytes.
+ */
+int32_t stintmate_ipc_respond(stintmate_ipc_request *req, const uint8_t *result, size_t len);
+
+/**
+ * Answers a call with an error `code` and `message`, optional MessagePack `details` (length
+ * 0: none) and a retry hint (`retry_ms` -1: none). Consumes the request.
+ *
+ * # Safety
+ * As [`stintmate_ipc_respond`]; strings NUL-terminated.
+ */
+int32_t stintmate_ipc_respond_error(stintmate_ipc_request *req,
+                                    const char *code,
+                                    const char *message,
+                                    const uint8_t *details,
+                                    size_t details_len,
+                                    int64_t retry_ms);
+
+/**
+ * Declares an event channel on a node.
+ *
+ * # Safety
+ * `node` valid; `name` NUL-terminated; `versions` valid for `n_versions` values; `out` valid
+ * for a write.
+ */
+int32_t stintmate_ipc_event_channel(stintmate_ipc_node *node,
+                                    const char *name,
+                                    const uint32_t *versions,
+                                    size_t n_versions,
+                                    stintmate_ipc_channel **out);
+
+/**
+ * Declares a state channel with an initial value (MessagePack; length 0: nil).
+ *
+ * # Safety
+ * As [`stintmate_ipc_event_channel`]; `initial` valid for `initial_len` bytes.
+ */
+int32_t stintmate_ipc_state_channel(stintmate_ipc_node *node,
+                                    const char *name,
+                                    const uint8_t *initial,
+                                    size_t initial_len,
+                                    const uint32_t *versions,
+                                    size_t n_versions,
+                                    stintmate_ipc_channel **out);
+
+/**
+ * Declares a stream channel. `layout` is the MessagePack form of the layout (see
+ * `stintmate_ipc_layout_normalize`). `rate_hz` 0 means unlimited; `queue` 0 the default ring.
+ *
+ * # Safety
+ * As [`stintmate_ipc_event_channel`]; `layout` valid for `layout_len` bytes.
+ */
+int32_t stintmate_ipc_stream_channel(stintmate_ipc_node *node,
+                                     const char *name,
+                                     const uint8_t *layout,
+                                     size_t layout_len,
+                                     const uint32_t *versions,
+                                     size_t n_versions,
+                                     double rate_hz,
+                                     size_t queue,
+                                     stintmate_ipc_channel **out);
+
+/**
+ * `{name, kind: "event"|"state"|"stream", versions, layout?, rate_hz?}` of the channel.
+ *
+ * # Safety
+ * `ch` valid; `out` valid for a write.
+ */
+int32_t stintmate_ipc_channel_info(stintmate_ipc_channel *ch, stintmate_ipc_buffer *out);
+
+/**
+ * The number of subscribers of the channel (negative on a bad handle).
+ *
+ * # Safety
+ * `ch` valid.
+ */
+int64_t stintmate_ipc_channel_subscribers(stintmate_ipc_channel *ch);
+
+/**
+ * 1 when anybody is subscribed, else 0.
+ *
+ * # Safety
+ * `ch` valid.
+ */
+int32_t stintmate_ipc_channel_is_active(stintmate_ipc_channel *ch);
+
+/**
+ * Ends every subscription (`end` with `code`, default `closed`) and withdraws the channel.
+ *
+ * # Safety
+ * `ch` valid; strings NUL-terminated or null.
+ */
+int32_t stintmate_ipc_channel_close(stintmate_ipc_channel *ch,
+                                    const char *code,
+                                    const char *message);
+
+/**
+ * Publishes on an event or state channel. Event channel: `data` is the MessagePack event;
+ * `ts_ns` is its timestamp (`STINTMATE_IPC_TS_NOW`: now), `version` limits it to the
+ * subscriptions of that channel version (0: every version) and `accept` (nullable) picks
+ * subscriptions (it cannot be combined with `ts_ns`). State channel: `data` is the new state
+ * (coalesced for slow subscribers); `ts_ns`, `version` and `accept` must be left at their
+ * defaults. `queued_out` (nullable) receives how many subscriptions it was queued for.
+ *
+ * # Safety
+ * `ch` valid; `data` valid for `len` bytes; `accept` per its type with `user_data`;
+ * `queued_out` null or valid for a write.
+ */
+int32_t stintmate_ipc_publish(stintmate_ipc_channel *ch,
+                              const uint8_t *data,
+                              size_t len,
+                              int64_t ts_ns,
+                              uint32_t version,
+                              stintmate_ipc_accept_cb accept,
+                              void *user_data,
+                              size_t *queued_out);
+
+/**
+ * The current value of a state channel (MessagePack).
+ *
+ * # Safety
+ * `ch` valid; `out` valid for a write.
+ */
+int32_t stintmate_ipc_state_get(stintmate_ipc_channel *ch, stintmate_ipc_buffer *out);
+
+/**
+ * Sends one sample on a stream channel: `body` is the packed layout body (exactly its size);
+ * `t_ns` when it was taken (`STINTMATE_IPC_TS_NOW`: now). `sent_out` (nullable) receives how
+ * many subscriptions it was queued for.
+ *
+ * # Safety
+ * `ch` valid; `body` valid for `len` bytes; `sent_out` null or valid for a write.
+ */
+int32_t stintmate_ipc_stream_send(stintmate_ipc_channel *ch,
+                                  const uint8_t *body,
+                                  size_t len,
+                                  int64_t t_ns,
+                                  size_t *sent_out);
+
+/**
+ * Sets the refusal a subscribe hook returns (the hook then returns nonzero).
+ *
+ * # Safety
+ * `ctx` from a subscribe hook, used during it; strings NUL-terminated; `details` valid for
+ * `details_len` bytes.
+ */
+int32_t stintmate_ipc_refuse(stintmate_ipc_hook_ctx *ctx,
+                             const char *code,
+                             const char *message,
+                             const uint8_t *details,
+                             size_t details_len);
+
+/**
+ * Sets the hook that runs before a subscription to the channel is accepted. Replaces the
+ * previous hook (releasing its `user_data`); a null `cb` accepts everyone.
+ *
+ * # Safety
+ * `ch` valid; `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_on_subscribe(stintmate_ipc_channel *ch,
+                                   stintmate_ipc_subscribe_cb cb,
+                                   void *user_data,
+                                   stintmate_ipc_release_cb release);
+
+/**
+ * Sets the hook called, on the hooks thread and in order, when the channel gains its first
+ * subscriber and loses its last. Replaces the previous hook (releasing its `user_data`).
+ *
+ * # Safety
+ * `ch` valid; `user_data` usable from library threads until released.
+ */
+int32_t stintmate_ipc_on_active(stintmate_ipc_channel *ch,
+                                stintmate_ipc_active_cb cb,
+                                void *user_data,
+                                stintmate_ipc_release_cb release);
+
+/**
+ * Releases the channel handle (the channel itself lives as long as its node).
+ *
+ * # Safety
+ * `ch` from a channel constructor, not used afterwards; null is ignored.
+ */
+void stintmate_ipc_channel_free(stintmate_ipc_channel *ch);
+
+/**
+ * The client's node, to offer methods and channels on to the endpoint it connects to (offer
+ * before `stintmate_ipc_client_start` so the first handshake carries them). Borrowed: valid
+ * until `stintmate_ipc_client_free`, never freed by the caller (null on a null client).
+ *
+ * # Safety
+ * `client` valid.
+ */
+stintmate_ipc_node *stintmate_ipc_client_node(stintmate_ipc_client *client);
 
 /**
  * A new owned reference to the same connection (null for null).
