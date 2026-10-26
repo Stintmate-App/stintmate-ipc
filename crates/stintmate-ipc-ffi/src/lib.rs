@@ -1,20 +1,44 @@
-//! The C ABI of Stintmate IPC v2 (PRY-085 T8), over the blocking façade.
+//! The C ABI of Stintmate IPC v2 (PRY-085 T8, PRY-095), over the blocking façade.
 //!
-//! * Every function returns an `int32_t` status: `0` is success, negative values are the
-//!   `STINTMATE_IPC_E_*` codes. The message of the last failure on the calling thread is read
-//!   with `stintmate_ipc_last_error_message`.
-//! * Payloads are **MessagePack bytes** in and out. A buffer returned by the library
-//!   (`stintmate_ipc_buffer`) is released with `stintmate_ipc_free_buffer`.
-//! * Callbacks get a `void* user_data`. Method handlers run on the handler pool (or on the
-//!   connection's callback lane for `INLINE` methods), subscriber callbacks on the
-//!   connection's callback lane, in order. **Never on a runtime thread**, but a callback must
-//!   not block for long: the lane serves every subscription of the connection.
-//! * A Rust panic never crosses the boundary: it becomes `STINTMATE_IPC_E_PANIC` (or an
-//!   `internal` answer when it happens in a handler).
-//! * Pointers passed to a callback are valid only until it returns.
+//! The rules (also at the top of the generated header):
+//!
+//! 1. **Status:** every fallible function returns an `int32_t`: `STINTMATE_IPC_OK` (0) or a
+//!    negative `STINTMATE_IPC_E_*`. Queries that cannot fail return their value. On failure the
+//!    calling thread's error record is set (`stintmate_ipc_last_error`).
+//! 2. **Payloads** are MessagePack. Buffers returned by the library (`stintmate_ipc_buffer`)
+//!    belong to the caller and are released with `stintmate_ipc_free_buffer`; a buffer of
+//!    length 0 may have a null `ptr`. Pointers passed into the library are borrowed for the
+//!    duration of the call (the library copies what it keeps); pointers passed to a callback
+//!    are valid only until the callback returns.
+//! 3. **Handles** are opaque pointers, each released with its own `_free`, exactly once, from
+//!    any thread.
+//! 4. **Callbacks** never run on a runtime (Tokio) thread: method handlers on the handler
+//!    pool (`INLINE`: the connection's lane), deliveries on the connection's lane, in order;
+//!    hooks and releases on the library's hooks thread; logs on the log thread. A callback may
+//!    call any function except `stintmate_ipc_shutdown`; a callback that blocks stalls its
+//!    lane or thread.
+//! 5. **Lifetime of `user_data`:** every registration takes `user_data` and an optional
+//!    `release`, which runs exactly once, on any thread, after the last callback that can
+//!    receive that `user_data`.
+//! 6. **Structs the caller fills** begin with `size_t struct_size` (set to `sizeof`); the
+//!    library reads only the fields that fit, so fields can be added at the end in a minor
+//!    version. Structs the library fills may grow at the end.
+//! 7. **Timeouts** are milliseconds; `STINTMATE_IPC_FOREVER` (-1) means none.
+//! 8. **Panics** never cross the boundary (`E_PANIC` or an `internal` answer).
+//! 9. **Strings** are NUL-terminated UTF-8 in; out as `stintmate_ipc_buffer` (not
+//!    NUL-terminated).
+//! 10. **Versioning:** `stintmate_ipc_abi_version()` returns `(MAJOR << 16) | MINOR`, equal to
+//!     `STINTMATE_IPC_ABI_MAJOR` / `_MINOR`. A caller accepts a DLL with the same MAJOR and a
+//!     MINOR at least its own. MINOR grows when functions, constants, struct fields at the end
+//!     or MessagePack map keys are added; MAJOR on any removal, rename, signature or meaning
+//!     change. The crate version (`stintmate_ipc_version`) is independent.
 
 mod client;
 mod endpoint;
+mod keys;
+mod node;
+mod peer;
+mod runtime;
 #[cfg(test)]
 mod tests;
 
@@ -26,7 +50,56 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use stintmate_ipc::codec::{self, Value};
 use stintmate_ipc::error::Error;
 
-static VERSION: &CStr = c"0.2.0";
+// ------------------------------------------------------------------------ versions
+
+/// The ABI major version: changes on any removal, rename, signature or meaning change.
+pub const STINTMATE_IPC_ABI_MAJOR: u32 = 1;
+/// The ABI minor version: grows when functions, constants or struct fields are added.
+pub const STINTMATE_IPC_ABI_MINOR: u32 = 0;
+/// A timeout of "none".
+pub const STINTMATE_IPC_FOREVER: i64 = -1;
+
+static VERSION: &CStr =
+    match CStr::from_bytes_with_nul(concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes()) {
+        Ok(v) => v,
+        Err(_) => panic!("bad version"),
+    };
+
+static SPEC_REVISION: std::sync::LazyLock<std::ffi::CString> = std::sync::LazyLock::new(|| {
+    std::ffi::CString::new(stintmate_ipc::SPEC_REVISION).unwrap_or_default()
+});
+
+/// `(MAJOR << 16) | MINOR` of the ABI this library implements.
+#[unsafe(no_mangle)]
+pub extern "C" fn stintmate_ipc_abi_version() -> u32 {
+    crate::run(0, || {
+        (STINTMATE_IPC_ABI_MAJOR << 16) | STINTMATE_IPC_ABI_MINOR
+    })
+}
+
+/// The library's (crate) version as a static NUL-terminated string.
+#[unsafe(no_mangle)]
+pub extern "C" fn stintmate_ipc_version() -> *const c_char {
+    crate::run(std::ptr::null(), || VERSION.as_ptr())
+}
+
+/// The revision of `SPEC.md` this library follows, as a static NUL-terminated string.
+#[unsafe(no_mangle)]
+pub extern "C" fn stintmate_ipc_spec_revision() -> *const c_char {
+    crate::run(std::ptr::null(), || SPEC_REVISION.as_ptr())
+}
+
+/// The protocol version the library speaks (the highest it offers in the handshake).
+#[unsafe(no_mangle)]
+pub extern "C" fn stintmate_ipc_protocol_version() -> u32 {
+    crate::run(0, || {
+        stintmate_ipc::handshake::SUPPORTED_VERSIONS
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+    })
+}
 
 // ------------------------------------------------------------------------ status codes
 
@@ -50,14 +123,14 @@ pub const STINTMATE_IPC_E_LOST: i32 = -7;
 pub const STINTMATE_IPC_E_TIMEOUT: i32 = -8;
 /// The call was cancelled.
 pub const STINTMATE_IPC_E_CANCELLED: i32 = -9;
-/// A protocol violation or a message that cannot be encoded.
+/// A protocol violation.
 pub const STINTMATE_IPC_E_PROTOCOL: i32 = -10;
 /// An argument is null, malformed or out of range.
 pub const STINTMATE_IPC_E_INVALID_ARG: i32 = -11;
 /// A panic was caught inside the library.
 pub const STINTMATE_IPC_E_PANIC: i32 = -12;
-/// The other end answered with an error: the result buffer holds the MessagePack map
-/// `{code, msg, details?, retry_ms?}`.
+/// The other end answered with an error: the details are in the error record
+/// (`stintmate_ipc_last_error`).
 pub const STINTMATE_IPC_E_REMOTE: i32 = -13;
 /// The message is larger than the peer accepts.
 pub const STINTMATE_IPC_E_TOO_LARGE: i32 = -14;
@@ -65,8 +138,14 @@ pub const STINTMATE_IPC_E_TOO_LARGE: i32 = -14;
 pub const STINTMATE_IPC_E_IO: i32 = -15;
 /// An internal failure.
 pub const STINTMATE_IPC_E_INTERNAL: i32 = -16;
-/// `stintmate_ipc_call_wait` gave up waiting; the call is still in flight.
+/// `stintmate_ipc_call_wait` (or shutdown) gave up waiting.
 pub const STINTMATE_IPC_E_WAIT_TIMEOUT: i32 = -17;
+/// A value cannot be encoded.
+pub const STINTMATE_IPC_E_ENCODE: i32 = -18;
+/// The handle was stopped or closed.
+pub const STINTMATE_IPC_E_CLOSED: i32 = -19;
+/// The library was shut down (`stintmate_ipc_shutdown`).
+pub const STINTMATE_IPC_E_SHUTDOWN: i32 = -20;
 
 /// The status of a library error.
 pub(crate) fn status_of(e: &Error) -> i32 {
@@ -84,40 +163,131 @@ pub(crate) fn status_of(e: &Error) -> i32 {
         Error::CallCancelled => STINTMATE_IPC_E_CANCELLED,
         Error::Remote(_) => STINTMATE_IPC_E_REMOTE,
         Error::TooLarge { .. } => STINTMATE_IPC_E_TOO_LARGE,
-        Error::Protocol(_) | Error::Encode(_) => STINTMATE_IPC_E_PROTOCOL,
+        Error::Encode(_) => STINTMATE_IPC_E_ENCODE,
+        Error::Protocol(_) => STINTMATE_IPC_E_PROTOCOL,
         Error::Invalid(_) => STINTMATE_IPC_E_INVALID_ARG,
         Error::Io(_) => STINTMATE_IPC_E_IO,
     }
 }
 
+// ------------------------------------------------------------------------ the error record
+
+/// The last failure of a thread.
+#[derive(Default)]
+struct ErrorRecord {
+    status: i32,
+    message: String,
+    code: Option<String>,
+    data: Option<Value>,
+    retry_ms: Option<u64>,
+    os_error: Option<i32>,
+}
+
 thread_local! {
-    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+    static LAST_ERROR: RefCell<ErrorRecord> = RefCell::new(ErrorRecord::default());
 }
 
-/// Records the message of the last failure of this thread.
-pub(crate) fn set_error(message: impl Into<String>) {
-    let message = message.into();
-    LAST_ERROR.with(|e| *e.borrow_mut() = message);
+/// Records a failure of this thread.
+pub(crate) fn record_error(status: i32, message: impl Into<String>) {
+    let rec = ErrorRecord {
+        status,
+        message: message.into(),
+        ..ErrorRecord::default()
+    };
+    let _ = LAST_ERROR.try_with(|e| *e.borrow_mut() = rec);
 }
 
-/// Records `e` and returns its status.
+/// Records `e` (with its remote code, details, retry hint or OS error) and returns its status.
 pub(crate) fn fail(e: &Error) -> i32 {
-    set_error(e.to_string());
-    status_of(e)
+    let status = status_of(e);
+    let mut rec = ErrorRecord {
+        status,
+        message: e.to_string(),
+        ..ErrorRecord::default()
+    };
+    match e {
+        Error::Remote(r) => {
+            rec.message.clone_from(&r.message);
+            rec.code = Some(r.code.clone());
+            rec.data.clone_from(&r.details);
+            rec.retry_ms = r.retry_ms;
+        }
+        Error::Handshake(f) => {
+            rec.message.clone_from(&f.message);
+            rec.code = Some(f.code.as_str().to_owned());
+        }
+        Error::HandshakeTimeout => rec.code = Some("timeout".to_owned()),
+        Error::PeerBye { code, .. } => rec.code = Some(code.clone()),
+        Error::ConnectionLost { code, .. } => rec.code.clone_from(code),
+        Error::Io(io) => rec.os_error = io.raw_os_error(),
+        _ => {}
+    }
+    let _ = LAST_ERROR.try_with(|l| *l.borrow_mut() = rec);
+    status
+}
+
+/// Records a failure with all its details (the peer and client code keep errors as data).
+pub(crate) fn record_detail(
+    status: i32,
+    message: String,
+    code: Option<String>,
+    data: Option<Value>,
+    retry_ms: Option<u64>,
+    os_error: Option<i32>,
+) {
+    let rec = ErrorRecord {
+        status,
+        message,
+        code,
+        data,
+        retry_ms,
+        os_error,
+    };
+    let _ = LAST_ERROR.try_with(|l| *l.borrow_mut() = rec);
 }
 
 /// Records an invalid argument.
 pub(crate) fn invalid(message: &str) -> i32 {
-    set_error(message);
+    record_error(STINTMATE_IPC_E_INVALID_ARG, message);
     STINTMATE_IPC_E_INVALID_ARG
 }
 
-/// Runs `f`; a panic becomes [`STINTMATE_IPC_E_PANIC`].
+/// Runs `f`; a panic becomes [`STINTMATE_IPC_E_PANIC`], and after shutdown nothing runs.
 pub(crate) fn guard(f: impl FnOnce() -> i32) -> i32 {
+    if runtime::is_shutdown() {
+        return runtime::shutdown_status();
+    }
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(status) => status,
         Err(payload) => {
-            set_error(format!("panic: {}", panic_message(payload.as_ref())));
+            record_error(
+                STINTMATE_IPC_E_PANIC,
+                format!("panic: {}", panic_message(payload.as_ref())),
+            );
+            STINTMATE_IPC_E_PANIC
+        }
+    }
+}
+
+/// Runs a getter or a release function: a panic returns `default` instead of unwinding out of the
+/// DLL (these entry points work after shutdown, so no shutdown gate).
+pub(crate) fn run<T>(default: T, f: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => default,
+    }
+}
+
+/// [`run`] for a status-returning function that works after shutdown: a panic is recorded and
+/// answered with [`STINTMATE_IPC_E_PANIC`].
+pub(crate) fn run_status(f: impl FnOnce() -> i32) -> i32 {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(status) => status,
+        Err(payload) => {
+            record_error(
+                STINTMATE_IPC_E_PANIC,
+                format!("panic: {}", panic_message(payload.as_ref())),
+            );
             STINTMATE_IPC_E_PANIC
         }
     }
@@ -141,25 +311,63 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// `buf` must be null or valid for writes of `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_last_error_message(buf: *mut c_char, len: usize) -> usize {
-    LAST_ERROR.with(|e| {
-        let e = e.borrow();
-        let bytes = e.as_bytes();
-        if !buf.is_null() && len > 0 {
-            let n = bytes.len().min(len - 1);
-            // SAFETY: the caller guarantees `buf` is valid for `len` bytes and n < len.
-            unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), n);
-                *buf.add(n) = 0;
-            }
-        }
-        bytes.len()
+    crate::run(0, || {
+        LAST_ERROR
+            .try_with(|e| {
+                let e = e.borrow();
+                let bytes = e.message.as_bytes();
+                if !buf.is_null() && len > 0 {
+                    let n = bytes.len().min(len - 1);
+                    // SAFETY: the caller guarantees `buf` is valid for `len` bytes and n < len.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), n);
+                        *buf.add(n) = 0;
+                    }
+                }
+                bytes.len()
+            })
+            .unwrap_or(0)
     })
 }
 
-/// The library's version as a static NUL-terminated string (never freed by the caller).
+/// The calling thread's last failure as a MessagePack map `{status, message, code?, data?,
+/// retry_ms?, os_error?}` (`code`/`data`/`retry_ms` of a remote error or a `bye`, `os_error`
+/// the Win32 code). With no failure recorded: `{status: 0, message: ""}`.
+///
+/// # Safety
+/// `out` valid for a write.
 #[unsafe(no_mangle)]
-pub extern "C" fn stintmate_ipc_version() -> *const c_char {
-    VERSION.as_ptr()
+pub unsafe extern "C" fn stintmate_ipc_last_error(out: *mut stintmate_ipc_buffer) -> i32 {
+    crate::run_status(|| {
+        if out.is_null() {
+            // Not recorded: that would overwrite the very record the caller asked for.
+            return STINTMATE_IPC_E_INVALID_ARG;
+        }
+        let map = LAST_ERROR
+            .try_with(|e| {
+                let e = e.borrow();
+                let mut pairs: Vec<(&str, Value)> = vec![
+                    ("status", Value::from(i64::from(e.status))),
+                    ("message", Value::from(e.message.as_str())),
+                ];
+                if let Some(c) = &e.code {
+                    pairs.push(("code", Value::from(c.as_str())));
+                }
+                if let Some(d) = &e.data {
+                    pairs.push(("data", d.clone()));
+                }
+                if let Some(r) = e.retry_ms {
+                    pairs.push(("retry_ms", Value::from(r)));
+                }
+                if let Some(o) = e.os_error {
+                    pairs.push(("os_error", Value::from(i64::from(o))));
+                }
+                codec::map(pairs)
+            })
+            .unwrap_or(Value::Nil);
+        // SAFETY: `out` per the contract.
+        unsafe { put_value(out, &map) }
+    })
 }
 
 // ------------------------------------------------------------------------ buffers
@@ -223,18 +431,20 @@ pub(crate) unsafe fn put_value(out: *mut stintmate_ipc_buffer, value: &Value) ->
 /// `buf` must come from the library and not be freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_free_buffer(buf: stintmate_ipc_buffer) {
-    if buf.ptr.is_null() {
-        return;
-    }
-    LIVE_BUFFERS.fetch_sub(1, Ordering::Relaxed);
-    // SAFETY: the pointer and length are those of a boxed slice made by `put_buffer`.
-    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(buf.ptr, buf.len)) });
+    crate::run((), || {
+        if buf.ptr.is_null() {
+            return;
+        }
+        LIVE_BUFFERS.fetch_sub(1, Ordering::Relaxed);
+        // SAFETY: the pointer and length are those of a boxed slice made by `put_buffer`.
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(buf.ptr, buf.len)) });
+    })
 }
 
 /// The number of buffers handed out and not yet freed (a leak check for tests).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_live_buffers() -> isize {
-    LIVE_BUFFERS.load(Ordering::Relaxed)
+    crate::run(0, || LIVE_BUFFERS.load(Ordering::Relaxed))
 }
 
 // ------------------------------------------------------------------------ argument helpers
@@ -279,10 +489,7 @@ pub(crate) unsafe fn value_arg(p: *const u8, len: usize, what: &str) -> Result<V
     }
     // SAFETY: valid for `len` bytes per the caller's contract.
     let bytes = unsafe { std::slice::from_raw_parts(p, len) };
-    codec::decode(bytes).map_err(|e| {
-        set_error(format!("{what}: {e}"));
-        STINTMATE_IPC_E_INVALID_ARG
-    })
+    codec::decode(bytes).map_err(|e| invalid(&format!("{what}: {e}")))
 }
 
 /// A list of versions (null/0 is `[1]`).
@@ -310,99 +517,5 @@ unsafe impl Sync for UserData {}
 impl UserData {
     pub(crate) fn get(self) -> *mut std::ffi::c_void {
         self.0
-    }
-}
-
-// ------------------------------------------------------------------------ naming and keys
-
-/// Writes the pipe path of `app` (and `process`, may be null) for the current user, UTF-8
-/// without NUL, into `out`.
-///
-/// # Safety
-/// Strings NUL-terminated; `out` valid for a write.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stintmate_ipc_pipe_path(
-    app: *const c_char,
-    process: *const c_char,
-    out: *mut stintmate_ipc_buffer,
-) -> i32 {
-    guard(|| {
-        // SAFETY: the contract of this function.
-        let (app, process) = unsafe {
-            match (cstr(app, "app"), opt_cstr(process, "process")) {
-                (Ok(a), Ok(p)) => (a, p),
-                (Err(s), _) | (_, Err(s)) => return s,
-            }
-        };
-        match stintmate_ipc::naming::pipe_path(app, process) {
-            Ok(path) => {
-                // SAFETY: `out` per the contract.
-                unsafe { put_buffer(out, path.into_bytes()) };
-                STINTMATE_IPC_OK
-            }
-            Err(e) => {
-                set_error(e.to_string());
-                STINTMATE_IPC_E_INVALID_ARG
-            }
-        }
-    })
-}
-
-/// Writes the default key file path (`<workspace>\ipc\key`) into `out`; `workspace` may be
-/// null to find it (`STINTMATE_WORKSPACE`, then the settings file).
-///
-/// # Safety
-/// As [`stintmate_ipc_pipe_path`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stintmate_ipc_default_key_path(
-    workspace: *const c_char,
-    out: *mut stintmate_ipc_buffer,
-) -> i32 {
-    guard(|| {
-        // SAFETY: the contract of this function.
-        let ws = match unsafe { opt_cstr(workspace, "workspace") } {
-            Ok(w) => w,
-            Err(s) => return s,
-        };
-        match stintmate_ipc::keyfile::default_key_path(ws.map(std::path::Path::new)) {
-            Ok(p) => {
-                // SAFETY: `out` per the contract.
-                unsafe { put_buffer(out, p.to_string_lossy().into_owned().into_bytes()) };
-                STINTMATE_IPC_OK
-            }
-            Err(e) => fail(&Error::KeyFile(e)),
-        }
-    })
-}
-
-/// Creates the key file (32 random bytes as hex, private to the user) when it does not exist.
-///
-/// # Safety
-/// `path` NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stintmate_ipc_ensure_key(path: *const c_char) -> i32 {
-    guard(|| {
-        // SAFETY: the contract of this function.
-        let path = match unsafe { cstr(path, "path") } {
-            Ok(p) => p,
-            Err(s) => return s,
-        };
-        match stintmate_ipc::keyfile::ensure_key(std::path::Path::new(path)) {
-            Ok(_) => STINTMATE_IPC_OK,
-            Err(e) => fail(&Error::KeyFile(e)),
-        }
-    })
-}
-
-/// 1 when `app` is a valid app id, else 0.
-///
-/// # Safety
-/// `app` NUL-terminated or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stintmate_ipc_valid_app(app: *const c_char) -> i32 {
-    // SAFETY: the contract of this function.
-    match unsafe { cstr(app, "app") } {
-        Ok(a) => i32::from(stintmate_ipc::naming::valid_app(a)),
-        Err(_) => 0,
     }
 }

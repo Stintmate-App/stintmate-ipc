@@ -16,6 +16,13 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 stintmate-ipc.workspace = true
 crossbeam-channel.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# MIT/Apache-2.0: the tests load stintmate_ipc.dll the way a C caller does.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+# The conformance tool as a library: the tests run its checks against the DLL.
+stintmate-ipc-check.workspace = true
 
 [build-dependencies]
 # MPL-2.0, used only at build time to write include/stintmate_ipc.h (never linked).

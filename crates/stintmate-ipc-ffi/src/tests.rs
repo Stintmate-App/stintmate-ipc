@@ -12,6 +12,9 @@ use stintmate_ipc::layout::{FieldType, Layout};
 
 use crate::client::*;
 use crate::endpoint::*;
+use crate::keys::*;
+use crate::node::*;
+use crate::peer::*;
 use crate::*;
 
 /// The buffer counter is global: tests that count run one at a time.
@@ -23,6 +26,22 @@ fn serial() -> MutexGuard<'static, ()> {
 
 fn c(s: &str) -> CString {
     CString::new(s).unwrap()
+}
+
+fn call_opts(timeout_ms: u32) -> stintmate_ipc_call_opts {
+    stintmate_ipc_call_opts {
+        struct_size: size_of::<stintmate_ipc_call_opts>(),
+        version: 1,
+        timeout_ms: if timeout_ms == 0 {
+            -1
+        } else {
+            i64::from(timeout_ms)
+        },
+        idempotency_key: std::ptr::null(),
+        on_progress: None,
+        user_data: std::ptr::null_mut(),
+        release: None,
+    }
 }
 
 fn mp(v: &Value) -> Vec<u8> {
@@ -54,6 +73,12 @@ fn last_error() -> String {
     s.to_owned()
 }
 
+fn last_error_map() -> Value {
+    let mut b = empty();
+    assert_eq!(unsafe { stintmate_ipc_last_error(&mut b) }, 0);
+    codec::decode(&take(b)).unwrap()
+}
+
 fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(10);
     while !cond() {
@@ -81,7 +106,30 @@ impl Rig {
         let key = std::env::temp_dir().join(format!("stintmate-ffi-key-{tag}"));
         let pipe = c(&format!("stintmate-ffi-{tag}"));
         let keyc = c(key.to_str().unwrap());
-        assert_eq!(unsafe { stintmate_ipc_ensure_key(keyc.as_ptr()) }, 0);
+        assert_eq!(
+            unsafe { stintmate_ipc_ensure_key(keyc.as_ptr(), std::ptr::null_mut()) },
+            0
+        );
+        let ks = stintmate_ipc_key_source {
+            struct_size: size_of::<stintmate_ipc_key_source>(),
+            path: keyc.as_ptr(),
+            key: std::ptr::null(),
+            key_len: 0,
+            create: 0,
+        };
+        let opts = stintmate_ipc_endpoint_opts {
+            struct_size: size_of::<stintmate_ipc_endpoint_opts>(),
+            pipe: pipe.as_ptr(),
+            registry: std::ptr::null(),
+            handshake_timeout_ms: -1,
+            handler_threads: 4,
+            heartbeat_ms: 0,
+            event_queue: 0,
+            event_queue_bytes: 0,
+            max_inflight: 0,
+            features: std::ptr::null(),
+            features_len: 0,
+        };
         let (app_s, app_c) = (c("server"), c("client"));
         let info = |app: &CString| stintmate_ipc_peer_info {
             app: app.as_ptr(),
@@ -92,13 +140,17 @@ impl Rig {
             meta_len: 0,
         };
         let mut ep = std::ptr::null_mut();
-        let st = unsafe {
-            stintmate_ipc_endpoint_new(pipe.as_ptr(), &info(&app_s), keyc.as_ptr(), 4, &mut ep)
-        };
+        let st = unsafe { stintmate_ipc_endpoint_new(&info(&app_s), &ks, &opts, &mut ep) };
         assert_eq!(st, 0, "{}", last_error());
         let mut client = std::ptr::null_mut();
         let st = unsafe {
-            stintmate_ipc_client_new(pipe.as_ptr(), &info(&app_c), keyc.as_ptr(), &mut client)
+            stintmate_ipc_client_new(
+                pipe.as_ptr(),
+                &info(&app_c),
+                &ks,
+                std::ptr::null(),
+                &mut client,
+            )
         };
         assert_eq!(st, 0, "{}", last_error());
         Rig { ep, client, key }
@@ -114,7 +166,7 @@ impl Rig {
         );
         assert_eq!(unsafe { stintmate_ipc_client_start(self.client) }, 0);
         assert_eq!(
-            unsafe { stintmate_ipc_client_wait_connected(self.client, 5000) },
+            unsafe { stintmate_ipc_client_wait_connected(self.client, 5000, std::ptr::null_mut()) },
             0
         );
     }
@@ -124,13 +176,12 @@ impl Rig {
         let p = mp(params);
         let mut out = empty();
         let st = unsafe {
-            stintmate_ipc_call(
+            stintmate_ipc_client_call(
                 self.client,
                 m.as_ptr(),
-                1,
                 p.as_ptr(),
                 p.len(),
-                timeout_ms,
+                &call_opts(timeout_ms),
                 &mut out,
             )
         };
@@ -140,7 +191,14 @@ impl Rig {
     fn method(&self, name: &str, cb: stintmate_ipc_handler_cb, user: *mut c_void) {
         let n = c(name);
         let st = unsafe {
-            stintmate_ipc_endpoint_method(self.ep, n.as_ptr(), 0, std::ptr::null(), 0, cb, user)
+            stintmate_ipc_method(
+                stintmate_ipc_endpoint_node(self.ep),
+                n.as_ptr(),
+                std::ptr::null(),
+                cb,
+                user,
+                None,
+            )
         };
         assert_eq!(st, 0, "{}", last_error());
     }
@@ -158,7 +216,7 @@ impl Drop for Rig {
 
 unsafe extern "C-unwind" fn echo(
     _user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     params: *const u8,
     len: usize,
 ) {
@@ -167,17 +225,17 @@ unsafe extern "C-unwind" fn echo(
 
 unsafe extern "C-unwind" fn fail_with(
     _user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
     let (code, msg) = (c("nope"), c("not today"));
-    unsafe { stintmate_ipc_respond_error(r, code.as_ptr(), msg.as_ptr(), std::ptr::null(), 0) };
+    unsafe { stintmate_ipc_respond_error(r, code.as_ptr(), msg.as_ptr(), std::ptr::null(), 0, -1) };
 }
 
 unsafe extern "C-unwind" fn panics(
     _user: *mut c_void,
-    _r: *mut stintmate_ipc_responder,
+    _r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
@@ -187,7 +245,7 @@ unsafe extern "C-unwind" fn panics(
 /// Never answers on its own: parks the responder for the test to answer later.
 unsafe extern "C-unwind" fn park(
     user: *mut c_void,
-    r: *mut stintmate_ipc_responder,
+    r: *mut stintmate_ipc_request,
     _params: *const u8,
     _len: usize,
 ) {
@@ -220,10 +278,15 @@ fn echo_and_remote_errors() {
 
     let (st, out) = rig.call("t.fail", &Value::Nil, 2000);
     assert_eq!(st, STINTMATE_IPC_E_REMOTE);
-    let e = codec::decode(&out).unwrap();
+    assert!(out.is_empty(), "a remote error no longer fills the result");
+    let e = last_error_map();
     assert_eq!(
         codec::get(&e, "code").and_then(|v| v.as_str()),
         Some("nope")
+    );
+    assert_eq!(
+        codec::get(&e, "status").and_then(|v| v.as_i64()),
+        Some(i64::from(STINTMATE_IPC_E_REMOTE))
     );
     assert!(last_error().contains("not today"));
 
@@ -240,13 +303,14 @@ fn invalid_arguments_are_statuses_not_crashes() {
             std::ptr::null(),
             std::ptr::null(),
             std::ptr::null(),
+            std::ptr::null(),
             &mut out,
         )
     };
     assert_eq!(st, STINTMATE_IPC_E_INVALID_ARG);
     assert!(last_error().contains("pipe"));
     assert_eq!(
-        unsafe { stintmate_ipc_call_cancel(std::ptr::null_mut()) },
+        unsafe { stintmate_ipc_call_cancel(std::ptr::null_mut(), std::ptr::null()) },
         STINTMATE_IPC_E_INVALID_ARG
     );
     unsafe { stintmate_ipc_free_buffer(empty()) };
@@ -254,7 +318,14 @@ fn invalid_arguments_are_statuses_not_crashes() {
     assert_eq!(unsafe { stintmate_ipc_valid_app(c("pitwall").as_ptr()) }, 1);
     let mut p = empty();
     assert_eq!(
-        unsafe { stintmate_ipc_pipe_path(c("pitwall").as_ptr(), std::ptr::null(), &mut p) },
+        unsafe {
+            stintmate_ipc_pipe_path(
+                c("pitwall").as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut p,
+            )
+        },
         0
     );
     assert!(
@@ -290,7 +361,7 @@ fn timeout_then_a_late_answer_is_harmless() {
         !parked.lock().unwrap().is_empty()
     });
     // Answering after the deadline must not fail or leak a pending state.
-    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_responder;
+    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_request;
     assert_eq!(unsafe { stintmate_ipc_respond(r, std::ptr::null(), 0) }, 0);
 }
 
@@ -307,7 +378,14 @@ fn cancel_and_wait() {
     let mut call = std::ptr::null_mut();
     assert_eq!(
         unsafe {
-            stintmate_ipc_call_async(rig.client, m.as_ptr(), 1, std::ptr::null(), 0, 0, &mut call)
+            stintmate_ipc_client_call_async(
+                rig.client,
+                m.as_ptr(),
+                std::ptr::null(),
+                0,
+                &call_opts(0),
+                &mut call,
+            )
         },
         0
     );
@@ -316,9 +394,12 @@ fn cancel_and_wait() {
         unsafe { stintmate_ipc_call_wait(call, 100, &mut out) },
         STINTMATE_IPC_E_WAIT_TIMEOUT
     );
-    assert_eq!(unsafe { stintmate_ipc_call_cancel(call) }, 1);
     assert_eq!(
-        unsafe { stintmate_ipc_call_wait(call, u32::MAX, &mut out) },
+        unsafe { stintmate_ipc_call_cancel(call, std::ptr::null()) },
+        1
+    );
+    assert_eq!(
+        unsafe { stintmate_ipc_call_wait(call, -1, &mut out) },
         STINTMATE_IPC_E_CANCELLED
     );
     unsafe { stintmate_ipc_call_free(call) };
@@ -326,10 +407,10 @@ fn cancel_and_wait() {
     wait_for("the handler to be called", || {
         !parked.lock().unwrap().is_empty()
     });
-    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_responder;
+    let r = parked.lock().unwrap().pop().unwrap() as *mut stintmate_ipc_request;
     wait_for(
         "the cancel to arrive",
-        || unsafe { stintmate_ipc_responder_is_cancelled(r) } == 1,
+        || unsafe { stintmate_ipc_request_is_cancelled(r) } == 1,
     );
     unsafe { stintmate_ipc_respond(r, std::ptr::null(), 0) };
 
@@ -338,22 +419,18 @@ fn cancel_and_wait() {
     let p = mp(&text("hi"));
     assert_eq!(
         unsafe {
-            stintmate_ipc_call_async(
+            stintmate_ipc_client_call_async(
                 rig.client,
                 m.as_ptr(),
-                1,
                 p.as_ptr(),
                 p.len(),
-                2000,
+                &call_opts(2000),
                 &mut call,
             )
         },
         0
     );
-    assert_eq!(
-        unsafe { stintmate_ipc_call_wait(call, u32::MAX, &mut out) },
-        0
-    );
+    assert_eq!(unsafe { stintmate_ipc_call_wait(call, -1, &mut out) }, 0);
     assert_eq!(codec::decode(&take(out)).unwrap(), text("hi"));
     unsafe { stintmate_ipc_call_free(call) };
 }
@@ -381,15 +458,20 @@ fn subscribe(rig: &Rig, channel: &str, col: &Collector) -> *mut stintmate_ipc_su
     let ch = c(channel);
     let mut sub = std::ptr::null_mut();
     let st = unsafe {
-        stintmate_ipc_subscribe(
+        stintmate_ipc_client_subscribe(
             rig.client,
             ch.as_ptr(),
-            1,
-            std::ptr::null(),
-            0,
-            Some(collect),
-            None,
-            col as *const _ as *mut c_void,
+            &stintmate_ipc_subscribe_opts {
+                struct_size: size_of::<stintmate_ipc_subscribe_opts>(),
+                version: 1,
+                options: std::ptr::null(),
+                options_len: 0,
+                timeout_ms: 5000,
+                on_delivery: Some(collect),
+                on_end: None,
+                user_data: col as *const _ as *mut c_void,
+                release: None,
+            },
             &mut sub,
         )
     };
@@ -408,7 +490,15 @@ fn subscribe_in_order_and_survive_a_panicking_callback() {
     let name = c("t.events");
     let mut ev = std::ptr::null_mut();
     assert_eq!(
-        unsafe { stintmate_ipc_event_channel(rig.ep, name.as_ptr(), std::ptr::null(), 0, &mut ev) },
+        unsafe {
+            stintmate_ipc_event_channel(
+                stintmate_ipc_endpoint_node(rig.ep),
+                name.as_ptr(),
+                std::ptr::null(),
+                0,
+                &mut ev,
+            )
+        },
         0
     );
     rig.go();
@@ -421,7 +511,18 @@ fn subscribe_in_order_and_survive_a_panicking_callback() {
     for i in 0..200i64 {
         let p = mp(&Value::from(i));
         assert_eq!(
-            unsafe { stintmate_ipc_publish(ev, p.as_ptr(), p.len(), STINTMATE_IPC_TS_NOW) },
+            unsafe {
+                stintmate_ipc_publish(
+                    ev,
+                    p.as_ptr(),
+                    p.len(),
+                    STINTMATE_IPC_TS_NOW,
+                    0,
+                    None,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
             0
         );
     }
@@ -449,7 +550,7 @@ fn state_snapshot_and_stream_samples() {
     assert_eq!(
         unsafe {
             stintmate_ipc_state_channel(
-                rig.ep,
+                stintmate_ipc_endpoint_node(rig.ep),
                 sname.as_ptr(),
                 initial.as_ptr(),
                 initial.len(),
@@ -467,7 +568,7 @@ fn state_snapshot_and_stream_samples() {
     assert_eq!(
         unsafe {
             stintmate_ipc_stream_channel(
-                rig.ep,
+                stintmate_ipc_endpoint_node(rig.ep),
                 tname.as_ptr(),
                 layout.as_ptr(),
                 layout.len(),
@@ -498,7 +599,13 @@ fn state_snapshot_and_stream_samples() {
         let body = n.to_le_bytes();
         assert_eq!(
             unsafe {
-                stintmate_ipc_publish(stream, body.as_ptr(), body.len(), 1_000 + i64::from(n))
+                stintmate_ipc_stream_send(
+                    stream,
+                    body.as_ptr(),
+                    body.len(),
+                    1_000 + i64::from(n),
+                    std::ptr::null_mut(),
+                )
             },
             0
         );
@@ -524,9 +631,9 @@ fn a_panicking_handler_answers_internal() {
     rig.method("t.panic", Some(panics), std::ptr::null_mut());
     rig.method("t.echo", Some(echo), std::ptr::null_mut());
     rig.go();
-    let (st, out) = rig.call("t.panic", &Value::Nil, 2000);
+    let (st, _) = rig.call("t.panic", &Value::Nil, 2000);
     assert_eq!(st, STINTMATE_IPC_E_REMOTE);
-    let e = codec::decode(&out).unwrap();
+    let e = last_error_map();
     assert_eq!(
         codec::get(&e, "code").and_then(|v| v.as_str()),
         Some("internal")
@@ -549,4 +656,39 @@ fn ten_thousand_calls_leak_no_buffers() {
         assert!(!out.is_empty());
     }
     assert_eq!(stintmate_ipc_live_buffers(), before);
+}
+
+#[test]
+fn handshake_errors_carry_their_code_in_the_record_and_the_error_map() {
+    use stintmate_ipc::handshake::HandshakeFailure;
+    let cases: [(Error, &str); 3] = [
+        (
+            Error::Handshake(HandshakeFailure::unavailable("no key")),
+            "unavailable",
+        ),
+        (
+            Error::Handshake(HandshakeFailure::from(
+                stintmate_ipc::error::ProtocolError::BadField {
+                    message: "auth".into(),
+                    field: "mac",
+                    expected: "bin",
+                },
+            )),
+            "protocol_error",
+        ),
+        (Error::HandshakeTimeout, "timeout"),
+    ];
+    for (e, code) in cases {
+        assert_eq!(fail(&e), STINTMATE_IPC_E_HANDSHAKE);
+        assert_eq!(
+            codec::get(&last_error_map(), "code").and_then(|v| v.as_str()),
+            Some(code)
+        );
+        let m = error_map(&e);
+        assert_eq!(codec::get(&m, "code").and_then(|v| v.as_str()), Some(code));
+        assert_eq!(
+            codec::get(&m, "status").and_then(|v| v.as_i64()),
+            Some(i64::from(STINTMATE_IPC_E_HANDSHAKE))
+        );
+    }
 }

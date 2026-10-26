@@ -810,6 +810,13 @@ impl Peer {
         i.client_pid.or(i.server_pid)
     }
 
+    /// An identity for this connection, equal for every clone of the same `Peer` and different
+    /// between connections that are open at the same time (it may repeat after the connection
+    /// and all its handles are gone).
+    pub fn id(&self) -> u64 {
+        Arc::as_ptr(&self.st) as usize as u64
+    }
+
     /// The raw connection.
     pub fn connection(&self) -> &Connection {
         &self.conn
