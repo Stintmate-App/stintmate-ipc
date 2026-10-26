@@ -12,7 +12,8 @@
  *     passed in are borrowed for the call; pointers passed to a callback are valid only until
  *     it returns.
  *  3. Handles are opaque pointers, each released with its own _free, exactly once, from any
- *     thread.
+ *     thread, also from a callback. A _free stops the callbacks of that handle and waits for
+ *     the ones running on other threads.
  *  4. Callbacks never run on a runtime thread: handlers on the handler pool, deliveries on the
  *     connection's lane, hooks and releases on the hooks thread, logs on the log thread. A
  *     callback may call any function except stintmate_ipc_shutdown.
@@ -21,13 +22,18 @@
  *  6. Structs the caller fills begin with size_t struct_size (sizeof); the library reads only
  *     the fields that fit, so fields can be added at the end in a minor version.
  *  7. Timeouts are milliseconds; STINTMATE_IPC_FOREVER (-1) means none.
- *  8. Panics never cross the boundary (E_PANIC or an internal answer).
+ *  8. Panics never cross the boundary (E_PANIC or an internal answer). A callback must not
+ *     throw: a C++ or .NET exception that leaves a callback aborts the process.
  *  9. Strings are NUL-terminated UTF-8 in; out as stintmate_ipc_buffer (not NUL-terminated).
  * 10. stintmate_ipc_abi_version() returns (MAJOR << 16) | MINOR, equal to
  *     STINTMATE_IPC_ABI_MAJOR / _MINOR. A caller accepts a DLL with the same MAJOR and a
  *     MINOR at least its own. MINOR grows when functions, constants, struct fields at the end
  *     or MessagePack map keys are added; MAJOR on any removal, rename, signature or meaning
  *     change.
+ * 11. Threads: on_stop is not called for a thread that ends after stintmate_ipc_shutdown
+ *     started. After shutdown never unload the DLL (FreeLibrary): the runtime's threads are
+ *     not all joined. stintmate_ipc_call_sync called from a callback does not wait for its
+ *     last on_progress.
  */
 
 #ifndef STINTMATE_IPC_H
@@ -55,7 +61,7 @@
 /**
  * A timeout of "none".
  */
-#define STINTMATE_IPC_FOREVER -1
+#define STINTMATE_IPC_FOREVER (-1)
 
 /**
  * Success.
@@ -65,103 +71,103 @@
 /**
  * Nobody serves the pipe.
  */
-#define STINTMATE_IPC_E_NOT_FOUND -1
+#define STINTMATE_IPC_E_NOT_FOUND (-1)
 
 /**
  * Every instance of the pipe is busy.
  */
-#define STINTMATE_IPC_E_BUSY -2
+#define STINTMATE_IPC_E_BUSY (-2)
 
 /**
  * Another process already serves the endpoint.
  */
-#define STINTMATE_IPC_E_IN_USE -3
+#define STINTMATE_IPC_E_IN_USE (-3)
 
 /**
  * The handshake failed or timed out, or the peer closed with `bye`.
  */
-#define STINTMATE_IPC_E_HANDSHAKE -4
+#define STINTMATE_IPC_E_HANDSHAKE (-4)
 
 /**
  * The key file is missing, unreadable or invalid.
  */
-#define STINTMATE_IPC_E_KEYFILE -5
+#define STINTMATE_IPC_E_KEYFILE (-5)
 
 /**
  * There is no connection.
  */
-#define STINTMATE_IPC_E_NOT_CONNECTED -6
+#define STINTMATE_IPC_E_NOT_CONNECTED (-6)
 
 /**
  * The connection was lost.
  */
-#define STINTMATE_IPC_E_LOST -7
+#define STINTMATE_IPC_E_LOST (-7)
 
 /**
  * The call got no answer in time.
  */
-#define STINTMATE_IPC_E_TIMEOUT -8
+#define STINTMATE_IPC_E_TIMEOUT (-8)
 
 /**
  * The call was cancelled.
  */
-#define STINTMATE_IPC_E_CANCELLED -9
+#define STINTMATE_IPC_E_CANCELLED (-9)
 
 /**
  * A protocol violation.
  */
-#define STINTMATE_IPC_E_PROTOCOL -10
+#define STINTMATE_IPC_E_PROTOCOL (-10)
 
 /**
  * An argument is null, malformed or out of range.
  */
-#define STINTMATE_IPC_E_INVALID_ARG -11
+#define STINTMATE_IPC_E_INVALID_ARG (-11)
 
 /**
  * A panic was caught inside the library.
  */
-#define STINTMATE_IPC_E_PANIC -12
+#define STINTMATE_IPC_E_PANIC (-12)
 
 /**
  * The other end answered with an error: the details are in the error record
  * (`stintmate_ipc_last_error`).
  */
-#define STINTMATE_IPC_E_REMOTE -13
+#define STINTMATE_IPC_E_REMOTE (-13)
 
 /**
  * The message is larger than the peer accepts.
  */
-#define STINTMATE_IPC_E_TOO_LARGE -14
+#define STINTMATE_IPC_E_TOO_LARGE (-14)
 
 /**
  * An operating system error.
  */
-#define STINTMATE_IPC_E_IO -15
+#define STINTMATE_IPC_E_IO (-15)
 
 /**
  * An internal failure.
  */
-#define STINTMATE_IPC_E_INTERNAL -16
+#define STINTMATE_IPC_E_INTERNAL (-16)
 
 /**
  * `stintmate_ipc_call_wait` (or shutdown) gave up waiting.
  */
-#define STINTMATE_IPC_E_WAIT_TIMEOUT -17
+#define STINTMATE_IPC_E_WAIT_TIMEOUT (-17)
 
 /**
  * A value cannot be encoded.
  */
-#define STINTMATE_IPC_E_ENCODE -18
+#define STINTMATE_IPC_E_ENCODE (-18)
 
 /**
  * The handle was stopped or closed.
  */
-#define STINTMATE_IPC_E_CLOSED -19
+#define STINTMATE_IPC_E_CLOSED (-19)
 
 /**
  * The library was shut down (`stintmate_ipc_shutdown`).
  */
-#define STINTMATE_IPC_E_SHUTDOWN -20
+#define STINTMATE_IPC_E_SHUTDOWN (-20)
 
 /**
  * `STINTMATE_IPC_METHOD_ORDERED`: one call at a time per connection, in arrival order.
@@ -1684,8 +1690,13 @@ int32_t stintmate_ipc_set_log_level(int32_t level);
 /**
  * Ends the library: no callback starts after this, running ones are waited for (up to
  * `timeout_ms`; `STINTMATE_IPC_FOREVER` waits as long as it takes), handles are closed, the
- * library's threads end and every pending `release` runs before it returns. Later calls fail
- * with `STINTMATE_IPC_E_SHUTDOWN`. Idempotent; not callable from a callback.
+ * hooks and log threads end and every pending `release` runs before it returns. Later calls
+ * fail with `STINTMATE_IPC_E_SHUTDOWN`. Idempotent; not callable from a callback.
+ *
+ * Never unload the DLL (`FreeLibrary`) afterwards: the core runtime's worker and blocking-pool
+ * threads are not all joined and keep running library code until the process ends. A thread
+ * that ends after shutdown started gets no `on_stop` (the hook would run from the thread's
+ * exit, when the host may be gone).
  * `STINTMATE_IPC_E_WAIT_TIMEOUT` when callbacks were still running (call again to finish).
  */
 int32_t stintmate_ipc_shutdown(int64_t timeout_ms);
