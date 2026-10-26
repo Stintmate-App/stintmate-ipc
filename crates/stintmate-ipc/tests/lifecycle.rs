@@ -260,3 +260,32 @@ async fn a_client_connected_before_close_gets_connection_lost_not_a_hang() {
 
 #[allow(dead_code)]
 fn unused(_: Client) {}
+
+/// A reconnect policy that blocks must not hold `close` back (the policy of a host may free
+/// the client from inside itself). Deterministic: the policy parks on a channel the test
+/// only releases after `close` returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_does_not_wait_for_a_blocked_reconnect_policy() {
+    let (pipe, k) = (pipe_name(), key());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    let c = Client::builder(&pipe, PeerInfo::new("client"), ks(k))
+        .reconnect_policy(Arc::new(move |_code, _attempt| {
+            let _ = entered_tx.send(());
+            let _ = go_rx.lock().unwrap().recv();
+            Some(Duration::from_millis(10))
+        }))
+        .build()
+        .unwrap();
+    c.start();
+    // No endpoint: the first attempt fails and the policy is entered.
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .expect("the policy was called");
+    tokio::time::timeout(Duration::from_secs(3), c.close())
+        .await
+        .expect("close returns while the policy is blocked");
+    let _ = go_tx.send(());
+}

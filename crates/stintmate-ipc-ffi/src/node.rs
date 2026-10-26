@@ -122,7 +122,7 @@ fn ms_duration(ms: i64) -> Option<Duration> {
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_node {
     pub(crate) node: Node,
-    regs: Regs,
+    pub(crate) regs: Regs,
 }
 
 impl stintmate_ipc_node {
@@ -143,20 +143,20 @@ impl Drop for stintmate_ipc_node {
 }
 
 /// The `user_data` of a method or hook, held by its handler; emptied when the owner is freed.
-struct Cell(Mutex<Option<Arc<Registration>>>);
+pub(crate) struct Cell(Mutex<Option<Arc<Registration>>>);
 
 impl Cell {
-    fn get(&self) -> Option<Arc<Registration>> {
+    pub(crate) fn get(&self) -> Option<Arc<Registration>> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
 /// The registrations of one node (and its channels), to release when its owner is freed.
 #[derive(Clone, Default)]
-struct Regs(Arc<Mutex<Vec<Weak<Cell>>>>);
+pub(crate) struct Regs(Arc<Mutex<Vec<Weak<Cell>>>>);
 
 impl Regs {
-    fn add(&self, user: Arc<Registration>) -> Arc<Cell> {
+    pub(crate) fn add(&self, user: Arc<Registration>) -> Arc<Cell> {
         let cell = Arc::new(Cell(Mutex::new(Some(user))));
         let mut v = self.0.lock().unwrap_or_else(|p| p.into_inner());
         v.retain(|w| w.strong_count() > 0);
@@ -518,8 +518,13 @@ pub unsafe extern "C" fn stintmate_ipc_on_peer(
             let cell = cell.clone();
             move |peer: blocking::Peer| {
                 let Some(cb) = cb else { return };
-                let Some(user) = cell.get() else { return };
+                if cell.get().is_none() {
+                    return;
+                }
+                let cell = cell.clone();
                 post_hook(move || {
+                    // Checked again here: a free that ran meanwhile stops the callbacks.
+                    let Some(user) = cell.get() else { return };
                     let p = stintmate_ipc_peer::new_ref(peer);
                     // SAFETY: the embedder's callback; `p` lives until it returns.
                     unsafe { cb(user.user_data(), event, p) };
@@ -1362,8 +1367,13 @@ pub unsafe extern "C" fn stintmate_ipc_on_active(
         let cell = c.regs.add(Registration::new(user_data, release));
         let hook = move |active: bool| {
             let Some(cb) = cb else { return };
-            let Some(user) = cell.get() else { return };
+            if cell.get().is_none() {
+                return;
+            }
+            let cell = cell.clone();
             post_hook(move || {
+                // Checked again here: a free that ran meanwhile stops the callbacks.
+                let Some(user) = cell.get() else { return };
                 // SAFETY: the embedder's callback.
                 unsafe { cb(user.user_data(), i32::from(active)) };
             });

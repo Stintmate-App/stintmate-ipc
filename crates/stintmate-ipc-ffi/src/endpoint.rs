@@ -392,14 +392,19 @@ pub unsafe extern "C" fn stintmate_ipc_on_handshake_failed(
             Ok(e) => e,
             Err(s) => return s,
         };
-        let user = Registration::new(user_data, release);
+        let cell = e.node.regs.add(Registration::new(user_data, release));
         e.ep.on_handshake_failed(move |pid: Option<u32>, err: &Error| {
             let Some(cb) = cb else { return };
-            let user = user.clone();
+            if cell.get().is_none() {
+                return;
+            }
+            let cell = cell.clone();
             let Ok(bytes) = codec::encode(&error_map(err)) else {
                 return;
             };
             post_hook(move || {
+                // Checked again here: a free that ran meanwhile stops the callbacks.
+                let Some(user) = cell.get() else { return };
                 // SAFETY: the embedder's callback; `bytes` outlives the call.
                 unsafe {
                     cb(

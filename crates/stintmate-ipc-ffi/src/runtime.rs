@@ -228,6 +228,13 @@ fn post_to(slot: &Mutex<Option<Worker>>, name: &str, job: Job) {
         return;
     }
     let mut w = lock(slot);
+    // Shutdown sets its flag before it takes the worker (under this same lock), so a
+    // check here decides: no worker, and no `on_start`, is started after it returned.
+    if is_shutdown() {
+        drop(w);
+        drop(job); // outside the lock: the job's drop may post again
+        return;
+    }
     let w = w.get_or_insert_with(|| spawn_worker(name));
     let _ = w.tx.send(Msg::Run(job));
 }
@@ -549,13 +556,50 @@ fn shutdown_inner(timeout_ms: i64) -> impl FnOnce() -> i32 + std::panic::UnwindS
         let deadline = u64::try_from(timeout_ms)
             .ok()
             .map(|ms| Instant::now() + Duration::from_millis(ms));
-        {
-            let _n = lock(&STATE.active);
+        let closers: Vec<_> = {
+            let mut n = lock(&STATE.active);
             STATE.shutdown.store(true, Ordering::Release);
-        }
-        let closers: Vec<_> = lock(&STATE.closers).drain().map(|(_, f)| f).collect();
-        for close in closers {
-            let _ = catch_unwind(AssertUnwindSafe(close));
+            let closers: Vec<_> = lock(&STATE.closers).drain().map(|(_, f)| f).collect();
+            if !closers.is_empty() {
+                // The closers count as running work: they may wait for a host callback that
+                // never returns, and the wait below is what honours the deadline. A later
+                // call keeps waiting for them.
+                *n += 1;
+            }
+            closers
+        };
+        if !closers.is_empty() {
+            let run = move |closers: Vec<Box<dyn Fn() + Send>>| {
+                for close in closers {
+                    let _ = catch_unwind(AssertUnwindSafe(close));
+                }
+                let mut n = lock(&STATE.active);
+                *n -= 1;
+                if *n == 0 {
+                    STATE.idle.notify_all();
+                }
+            };
+            let shared = std::sync::Arc::new(Mutex::new(Some(closers)));
+            let again = shared.clone();
+            let spawned = std::thread::Builder::new()
+                .name("stintmate-ipc-closers".into())
+                .spawn(move || {
+                    if let Some(c) = lock(&shared).take() {
+                        run(c);
+                    }
+                });
+            if spawned.is_err() {
+                // No thread: run them here (the deadline cannot cover them then).
+                let taken = lock(&again).take();
+                if let Some(c) = taken {
+                    let mut n = lock(&STATE.active);
+                    *n -= 1;
+                    drop(n);
+                    for close in c {
+                        let _ = catch_unwind(AssertUnwindSafe(close));
+                    }
+                }
+            }
         }
         let mut n = lock(&STATE.active);
         while *n > 0 {

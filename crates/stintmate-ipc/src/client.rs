@@ -173,9 +173,15 @@ impl Inner {
             return reconnect_delay(code.as_deref(), attempt);
         };
         let c = code.clone();
-        match tokio::task::spawn_blocking(move || policy(c.as_deref(), attempt)).await {
-            Ok(d) => d,
-            Err(_) => reconnect_delay(code.as_deref(), attempt),
+        // A policy that blocks (or that frees the client from inside itself) must not hold
+        // `close` back: stopping wins the race and the blocking thread is left to finish.
+        let job = tokio::task::spawn_blocking(move || policy(c.as_deref(), attempt));
+        tokio::select! {
+            () = self.stop.cancelled() => None,
+            r = job => match r {
+                Ok(d) => d,
+                Err(_) => reconnect_delay(code.as_deref(), attempt),
+            },
         }
     }
 }

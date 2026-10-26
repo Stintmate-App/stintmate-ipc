@@ -489,6 +489,10 @@ pub unsafe extern "C" fn stintmate_ipc_client_free(c: *mut stintmate_ipc_client)
         let b = unsafe { Box::from_raw(c) };
         b.0.close();
         drop(lock(&b.2.hook).take());
+        // The core client's closure keeps `ClientShared` alive as long as a node or peer
+        // clone does; the policy registration is let go now (release runs after any call
+        // in flight).
+        drop(lock(&b.2.policy).take());
     }));
 }
 
