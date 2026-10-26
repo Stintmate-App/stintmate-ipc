@@ -248,23 +248,25 @@ unsafe fn peer_of<'a>(p: *const stintmate_ipc_peer) -> Result<&'a stintmate_ipc_
 pub unsafe extern "C" fn stintmate_ipc_peer_ref(
     peer: *mut stintmate_ipc_peer,
 ) -> *mut stintmate_ipc_peer {
-    // SAFETY: the contract of this function.
-    let Some(p) = (unsafe { peer.as_ref() }) else {
-        return std::ptr::null_mut();
-    };
-    let owner = p.owner.clone();
-    let handle = match &owner {
-        Some(o) => {
-            let closer = o.0.clone();
-            Handle::with_closer(move || closer.close())
-        }
-        None => Handle::new(),
-    };
-    Box::into_raw(Box::new(stintmate_ipc_peer {
-        peer: p.peer.clone(),
-        owner,
-        handle,
-    }))
+    crate::run(std::ptr::null_mut(), || {
+        // SAFETY: the contract of this function.
+        let Some(p) = (unsafe { peer.as_ref() }) else {
+            return std::ptr::null_mut();
+        };
+        let owner = p.owner.clone();
+        let handle = match &owner {
+            Some(o) => {
+                let closer = o.0.clone();
+                Handle::with_closer(move || closer.close())
+            }
+            None => Handle::new(),
+        };
+        Box::into_raw(Box::new(stintmate_ipc_peer {
+            peer: p.peer.clone(),
+            owner,
+            handle,
+        }))
+    })
 }
 
 /// Releases a reference to a connection (the connection stays up while other references or its
@@ -287,8 +289,10 @@ pub unsafe extern "C" fn stintmate_ipc_peer_free(peer: *mut stintmate_ipc_peer) 
 /// `peer` null or a live peer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_peer_id(peer: *const stintmate_ipc_peer) -> u64 {
-    // SAFETY: the contract of this function.
-    unsafe { peer.as_ref() }.map_or(0, |p| p.peer.inner().id())
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { peer.as_ref() }.map_or(0, |p| p.peer.inner().id())
+    })
 }
 
 /// Who is on the other end: `{app, name, version, process?, meta, pid?, run}`. (Named
@@ -366,8 +370,10 @@ pub unsafe extern "C" fn stintmate_ipc_peer_decl(
 /// `peer` null or a live peer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_peer_is_open(peer: *const stintmate_ipc_peer) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe { peer.as_ref() }.map_or(0, |p| i32::from(p.peer.is_open()))
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { peer.as_ref() }.map_or(0, |p| i32::from(p.peer.is_open()))
+    })
 }
 
 /// Waits until the connection is closing or closed: 0, or `E_WAIT_TIMEOUT`.
@@ -741,8 +747,10 @@ pub unsafe extern "C" fn stintmate_ipc_peer_call_async(
 /// `p` null or live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_call_id(p: *const stintmate_ipc_pending) -> u64 {
-    // SAFETY: the contract of this function.
-    unsafe { p.as_ref() }.map_or(0, |p| p.call.id())
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { p.as_ref() }.map_or(0, |p| p.call.id())
+    })
 }
 
 /// 1 when the call has ended, else 0.
@@ -751,9 +759,11 @@ pub unsafe extern "C" fn stintmate_ipc_call_id(p: *const stintmate_ipc_pending) 
 /// `p` null or live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_call_is_done(p: *const stintmate_ipc_pending) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe { p.as_ref() }.map_or(0, |p| {
-        i32::from(p.call.wait_timeout(Some(Duration::ZERO)).is_some())
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { p.as_ref() }.map_or(0, |p| {
+            i32::from(p.call.wait_timeout(Some(Duration::ZERO)).is_some())
+        })
     })
 }
 
@@ -1369,14 +1379,16 @@ pub unsafe extern "C" fn stintmate_ipc_subscription_info(
 pub unsafe extern "C" fn stintmate_ipc_subscription_is_active(
     s: *mut stintmate_ipc_subscription,
 ) -> i32 {
-    // SAFETY: the contract of this function.
-    let Some(s) = (unsafe { s.as_ref() }) else {
-        return 0;
-    };
-    i32::from(match kind_of(s) {
-        Some(SubKind::Peer(p)) => !p.is_ended(),
-        Some(SubKind::Client(h)) => h.is_subscribed(),
-        None => false,
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        let Some(s) = (unsafe { s.as_ref() }) else {
+            return 0;
+        };
+        i32::from(match kind_of(s) {
+            Some(SubKind::Peer(p)) => !p.is_ended(),
+            Some(SubKind::Client(h)) => h.is_subscribed(),
+            None => false,
+        })
     })
 }
 

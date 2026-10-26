@@ -345,13 +345,15 @@ pub unsafe extern "C" fn stintmate_ipc_short_name(
     user: *const c_char,
     out: *mut stintmate_ipc_buffer,
 ) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe {
-        named(app, process, user, out, |a, p, u| match u {
-            Some(u) => naming::short_name_for(a, p, u),
-            None => naming::short_name(a, p),
-        })
-    }
+    crate::run_status(|| {
+        // SAFETY: the contract of this function.
+        unsafe {
+            named(app, process, user, out, |a, p, u| match u {
+                Some(u) => naming::short_name_for(a, p, u),
+                None => naming::short_name(a, p),
+            })
+        }
+    })
 }
 
 /// `\\.\pipe\stintmate-<app>[-<process>]-<user>`; `process` and `user` may be null (no
@@ -366,13 +368,15 @@ pub unsafe extern "C" fn stintmate_ipc_pipe_path(
     user: *const c_char,
     out: *mut stintmate_ipc_buffer,
 ) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe {
-        named(app, process, user, out, |a, p, u| match u {
-            Some(u) => naming::pipe_path_for(a, p, u),
-            None => naming::pipe_path(a, p),
-        })
-    }
+    crate::run_status(|| {
+        // SAFETY: the contract of this function.
+        unsafe {
+            named(app, process, user, out, |a, p, u| match u {
+                Some(u) => naming::pipe_path_for(a, p, u),
+                None => naming::pipe_path(a, p),
+            })
+        }
+    })
 }
 
 /// The workspace folder (`STINTMATE_WORKSPACE`, then the settings file); an empty buffer when
@@ -428,11 +432,13 @@ pub unsafe extern "C" fn stintmate_ipc_registry_dir(
 /// `app` NUL-terminated or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_valid_app(app: *const c_char) -> i32 {
-    // SAFETY: the contract of this function.
-    match unsafe { cstr(app, "app") } {
-        Ok(a) => i32::from(naming::valid_app(a)),
-        Err(_) => 0,
-    }
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        match unsafe { cstr(app, "app") } {
+            Ok(a) => i32::from(naming::valid_app(a)),
+            Err(_) => 0,
+        }
+    })
 }
 
 /// 1 when `name` is a valid method or channel name, else 0.
@@ -441,11 +447,13 @@ pub unsafe extern "C" fn stintmate_ipc_valid_app(app: *const c_char) -> i32 {
 /// `name` NUL-terminated or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_valid_name(name: *const c_char) -> i32 {
-    // SAFETY: the contract of this function.
-    match unsafe { cstr(name, "name") } {
-        Ok(n) => i32::from(decl::valid_name(n)),
-        Err(_) => 0,
-    }
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        match unsafe { cstr(name, "name") } {
+            Ok(n) => i32::from(decl::valid_name(n)),
+            Err(_) => 0,
+        }
+    })
 }
 
 /// Validates a layout (MessagePack `{name?, fields: [[name, type, count?], ...]}`) and returns

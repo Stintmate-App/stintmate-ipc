@@ -365,7 +365,7 @@ pub(crate) fn uncount_handle() {
 /// The number of handles handed out and not yet released (a leak check for tests).
 #[unsafe(no_mangle)]
 pub extern "C" fn stintmate_ipc_live_handles() -> isize {
-    STATE.live_handles.load(Ordering::Relaxed)
+    crate::run(0, || STATE.live_handles.load(Ordering::Relaxed))
 }
 
 // ------------------------------------------------------------------------ thread hooks

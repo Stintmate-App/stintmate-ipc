@@ -275,11 +275,13 @@ unsafe fn ep_ref<'a>(ep: *mut stintmate_ipc_endpoint) -> Result<&'a stintmate_ip
 pub unsafe extern "C" fn stintmate_ipc_endpoint_node(
     ep: *mut stintmate_ipc_endpoint,
 ) -> *mut stintmate_ipc_node {
-    // SAFETY: the contract of this function.
-    match unsafe { ep.as_ref() } {
-        Some(e) => std::ptr::from_ref(&e.node).cast_mut(),
-        None => std::ptr::null_mut(),
-    }
+    crate::run(std::ptr::null_mut(), || {
+        // SAFETY: the contract of this function.
+        match unsafe { ep.as_ref() } {
+            Some(e) => std::ptr::from_ref(&e.node).cast_mut(),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// Creates the pipe and starts serving. Declare methods and channels before or after.

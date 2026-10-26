@@ -585,11 +585,13 @@ pub unsafe extern "C" fn stintmate_ipc_request_info(
 pub unsafe extern "C" fn stintmate_ipc_request_peer(
     req: *const stintmate_ipc_request,
 ) -> *mut stintmate_ipc_peer {
-    // SAFETY: the contract of this function.
-    match unsafe { req.as_ref() } {
-        Some(r) => stintmate_ipc_peer::new_ref(blocking::Peer::from(r.0.ctx.peer().clone())),
-        None => std::ptr::null_mut(),
-    }
+    crate::run(std::ptr::null_mut(), || {
+        // SAFETY: the contract of this function.
+        match unsafe { req.as_ref() } {
+            Some(r) => stintmate_ipc_peer::new_ref(blocking::Peer::from(r.0.ctx.peer().clone())),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// 1 when the caller sent `cancel` or went away (stop and answer anything), else 0.
@@ -600,8 +602,10 @@ pub unsafe extern "C" fn stintmate_ipc_request_peer(
 pub unsafe extern "C" fn stintmate_ipc_request_is_cancelled(
     req: *const stintmate_ipc_request,
 ) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe { req.as_ref() }.map_or(0, |r| i32::from(r.0.ctx.is_cancelled()))
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { req.as_ref() }.map_or(0, |r| i32::from(r.0.ctx.is_cancelled()))
+    })
 }
 
 /// Waits until the request is cancelled (`STINTMATE_IPC_OK`) or `timeout_ms` passes
@@ -650,10 +654,12 @@ pub unsafe extern "C" fn stintmate_ipc_request_wait_cancelled(
 pub unsafe extern "C" fn stintmate_ipc_request_remaining_ms(
     req: *const stintmate_ipc_request,
 ) -> i64 {
-    // SAFETY: the contract of this function.
-    unsafe { req.as_ref() }
-        .and_then(|r| r.0.ctx.remaining())
-        .map_or(-1, |d| d.as_millis() as i64)
+    crate::run(-1, || {
+        // SAFETY: the contract of this function.
+        unsafe { req.as_ref() }
+            .and_then(|r| r.0.ctx.remaining())
+            .map_or(-1, |d| d.as_millis() as i64)
+    })
 }
 
 /// Tells the caller the request is alive: `data` is a report (MessagePack, length 0: none),
@@ -1010,11 +1016,13 @@ pub unsafe extern "C" fn stintmate_ipc_channel_info(
 /// `ch` valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_channel_subscribers(ch: *mut stintmate_ipc_channel) -> i64 {
-    // SAFETY: the contract of this function.
-    match unsafe { ch.as_ref() } {
-        Some(c) => c.subscribers() as i64,
-        None => i64::from(invalid("channel is null")),
-    }
+    crate::run(i64::from(crate::STINTMATE_IPC_E_PANIC), || {
+        // SAFETY: the contract of this function.
+        match unsafe { ch.as_ref() } {
+            Some(c) => c.subscribers() as i64,
+            None => i64::from(invalid("channel is null")),
+        }
+    })
 }
 
 /// 1 when anybody is subscribed, else 0.
@@ -1023,8 +1031,10 @@ pub unsafe extern "C" fn stintmate_ipc_channel_subscribers(ch: *mut stintmate_ip
 /// `ch` valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_channel_is_active(ch: *mut stintmate_ipc_channel) -> i32 {
-    // SAFETY: the contract of this function.
-    unsafe { ch.as_ref() }.map_or(0, |c| i32::from(c.subscribers() > 0))
+    crate::run(0, || {
+        // SAFETY: the contract of this function.
+        unsafe { ch.as_ref() }.map_or(0, |c| i32::from(c.subscribers() > 0))
+    })
 }
 
 /// Ends every subscription (`end` with `code`, default `closed`) and withdraws the channel.
@@ -1394,12 +1404,14 @@ pub unsafe extern "C" fn stintmate_ipc_on_active(
 /// `ch` from a channel constructor, not used afterwards; null is ignored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_channel_free(ch: *mut stintmate_ipc_channel) {
-    if ch.is_null() {
-        return;
-    }
-    // SAFETY: made by `Box::into_raw` in a channel constructor.
-    drop(unsafe { Box::from_raw(ch) });
-    uncount_handle();
+    crate::run((), || {
+        if ch.is_null() {
+            return;
+        }
+        // SAFETY: made by `Box::into_raw` in a channel constructor.
+        drop(unsafe { Box::from_raw(ch) });
+        uncount_handle();
+    })
 }
 
 /// The client's node, to offer methods and channels on to the endpoint it connects to (offer
@@ -1412,9 +1424,11 @@ pub unsafe extern "C" fn stintmate_ipc_channel_free(ch: *mut stintmate_ipc_chann
 pub unsafe extern "C" fn stintmate_ipc_client_node(
     client: *mut crate::client::stintmate_ipc_client,
 ) -> *mut stintmate_ipc_node {
-    // SAFETY: the contract of this function.
-    match unsafe { client.as_ref() } {
-        Some(c) => std::ptr::from_ref(&c.3).cast_mut(),
-        None => std::ptr::null_mut(),
-    }
+    crate::run(std::ptr::null_mut(), || {
+        // SAFETY: the contract of this function.
+        match unsafe { client.as_ref() } {
+            Some(c) => std::ptr::from_ref(&c.3).cast_mut(),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
