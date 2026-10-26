@@ -2,3 +2,4 @@
 vectors/*.json text eol=lf
 # The C header is written by build.rs with LF: keep the checkout byte-identical
 crates/stintmate-ipc-ffi/include/*.h text eol=lf
+crates/stintmate-ipc-ffi/cbindgen.toml text eol=lf

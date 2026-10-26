@@ -15,6 +15,16 @@ namespace Stintmate.Ipc
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct KeySource
+    {
+        public UIntPtr StructSize;
+        public IntPtr Path;
+        public IntPtr Key;
+        public UIntPtr KeyLen;
+        public int Create;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct PeerInfo
     {
         public IntPtr App;
@@ -54,12 +64,12 @@ namespace Stintmate.Ipc
         [DllImport(Lib)] public static extern UIntPtr stintmate_ipc_last_error_message(byte[] buf, UIntPtr len);
         [DllImport(Lib)] public static extern void stintmate_ipc_free_buffer(Buffer buf);
 
-        [DllImport(Lib)] public static extern int stintmate_ipc_client_new(byte[] pipe, ref PeerInfo info, byte[] keyPath, out IntPtr client);
+        [DllImport(Lib)] public static extern int stintmate_ipc_client_new(byte[] pipe, ref PeerInfo info, ref KeySource key, IntPtr opts, out IntPtr client);
         [DllImport(Lib)] public static extern int stintmate_ipc_client_start(IntPtr client);
         [DllImport(Lib)] public static extern int stintmate_ipc_client_wait_connected(IntPtr client, uint timeoutMs);
         [DllImport(Lib)] public static extern void stintmate_ipc_client_free(IntPtr client);
         [DllImport(Lib)] public static extern int stintmate_ipc_call(IntPtr client, byte[] method, uint version, byte[] pars, UIntPtr parsLen, uint timeoutMs, out Buffer result);
-        [DllImport(Lib)] public static extern int stintmate_ipc_subscribe(IntPtr client, byte[] channel, uint version, byte[] options, UIntPtr optionsLen, DeliveryCallback onDelivery, IntPtr onEnd, IntPtr userData, out IntPtr subscription);
+        [DllImport(Lib)] public static extern int stintmate_ipc_subscribe(IntPtr client, byte[] channel, uint version, byte[] options, UIntPtr optionsLen, DeliveryCallback onDelivery, IntPtr onEnd, IntPtr userData, IntPtr release, out IntPtr subscription);
         [DllImport(Lib)] public static extern void stintmate_ipc_unsubscribe(IntPtr subscription);
 
         /// <summary>A NUL-terminated UTF-8 copy of a string, for the const char* parameters.</summary>

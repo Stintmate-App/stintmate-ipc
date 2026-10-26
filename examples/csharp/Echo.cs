@@ -21,8 +21,12 @@ public static class Echo
         info.Name = Marshal.StringToHGlobalAnsi("C# example");
         info.Version = Marshal.StringToHGlobalAnsi("1.0");
 
+        var key = new KeySource();
+        key.StructSize = (UIntPtr)Marshal.SizeOf<KeySource>();
+        key.Path = Marshal.StringToHGlobalAnsi(args[1]);
+
         IntPtr client;
-        if (Native.stintmate_ipc_client_new(Native.Utf8(args[0]), ref info, Native.Utf8(args[1]), out client) != Native.Ok)
+        if (Native.stintmate_ipc_client_new(Native.Utf8(args[0]), ref info, ref key, IntPtr.Zero, out client) != Native.Ok)
         {
             Console.Error.WriteLine("client_new failed: " + Native.LastError());
             return 1;
