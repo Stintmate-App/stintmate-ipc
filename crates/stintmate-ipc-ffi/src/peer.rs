@@ -855,26 +855,50 @@ pub unsafe extern "C" fn stintmate_ipc_call_on_done(
             }
             g.hook = true;
         }
-        let (gate, addr) = (c.gate.clone(), p as usize);
+        let done = DoneJob(Some((c.gate.clone(), p as usize)));
         c.call.on_done(move || {
             post_hook(move || {
-                let p = addr as *mut stintmate_ipc_pending;
+                let mut done = done;
+                let p = done
+                    .0
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), |d| d.1 as *mut stintmate_ipc_pending);
                 // SAFETY: the handle is alive: `call_free` waits for `hook` to clear.
                 let _ = catch_unwind(AssertUnwindSafe(|| unsafe { cb(reg.user_data(), p) }));
                 drop(reg);
-                let free_now = {
-                    let mut g = lock(&gate.state);
-                    g.hook = false;
-                    g.freed
-                };
-                if free_now {
-                    // SAFETY: freed by the caller while this ran; made by `Box::into_raw`.
-                    drop(unsafe { Box::from_raw(p) });
-                }
+                done.finish();
             });
         });
         STINTMATE_IPC_OK
     })
+}
+
+/// The `on_done` job of a call: clears the gate when it has run, or when it is dropped without
+/// running (shutdown started first), so `call_free` never leaks the handle.
+struct DoneJob(Option<(Arc<Gate>, usize)>);
+
+impl DoneJob {
+    fn finish(&mut self) {
+        let Some((gate, addr)) = self.0.take() else {
+            return;
+        };
+        let free_now = {
+            let mut g = lock(&gate.state);
+            g.hook = false;
+            g.freed
+        };
+        if free_now {
+            // SAFETY: freed by the caller while the job was pending or ran; made by
+            // `Box::into_raw`.
+            drop(unsafe { Box::from_raw(addr as *mut stintmate_ipc_pending) });
+        }
+    }
+}
+
+impl Drop for DoneJob {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// Releases a call handle (the call itself is not cancelled). With an `on_done` still to run
