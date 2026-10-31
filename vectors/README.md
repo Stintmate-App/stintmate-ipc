@@ -24,8 +24,8 @@ expected content, compute the MACs, and feed the error cases to its receiver.
   int in a wider form, map keys in another order); the bytes here are what the reference
   encoder writes (shortest forms, keys in the order listed). An implementation that
   re-encodes the listed message in that order with shortest forms gets the same bytes.
-- `frames.json` cases with an `action` say what the receiver does with that frame.
+- `frames.json` cases with an `action` say, in free text, what the receiver does with that frame; the Rust tests decode and re-encode the frames (reserved kinds excepted) but do not execute the `action` text.
 
 The Rust tests (`crates/stintmate-ipc/tests/vectors.rs` and `handshake.rs`) load these files
-and fail if the reference code disagrees with them. This repository holds no generator
+and fail if the reference code disagrees with them. They feed each `hex` to the frame reader whole and one byte at a time. For `errors.json` they check that the frame reader, the MessagePack decoder or the message validator reports an error; whether the connection then sends `bye` `protocol_error` is exercised by the connection tests, not by these files. This repository holds no generator
 script: the files are the source.
