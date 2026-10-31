@@ -50,6 +50,39 @@ exported symbol and its signature (`crates/stintmate-ipc-ffi/tests/abi_baseline.
 cargo run --release -p stintmate-ipc-check -- --help
 ```
 
+## Releases
+
+A release of tag `vX.Y.Z` carries four files:
+
+| Asset | What it is |
+|---|---|
+| `stintmate_ipc.dll` | the native library with the C ABI |
+| `stintmate-ipc-check.exe` | the conformance checker |
+| `stintmate_ipc.h` | the C header of that DLL |
+| `SHA256SUMS` | SHA-256 of the three files above, in `sha256sum` format; check with `sha256sum --check SHA256SUMS` |
+
+The release notes are the version's section of [`CHANGELOG.md`](CHANGELOG.md). Tags with a
+`+` suffix (`v0.3.1+docs.1`) mark documentation-only changes: they have no release and no assets.
+The Python wheel is not part of these releases; it is published by the `stintmate-ipc-python`
+repository.
+
+To publish one, a maintainer runs the `release` workflow by hand (Actions, `release`, Run
+workflow) from `main`, with the `tag` to release:
+
+- The tag must exist, be an ancestor of `main`, equal `v` + the workspace version in
+  `Cargo.toml`, and have its `## <version>` section in `CHANGELOG.md`. A tag with `+` is refused.
+- The workflow builds the tag's tree (not `main`'s), runs the same checks as `ci` (fmt, clippy,
+  build, test, cargo-deny), builds the release binaries with `--locked`, uploads the assets to a
+  draft release, downloads them again and compares them with what it built.
+- With `dry_run` (the default) it stops there: the draft is named `dry-run-<tag>` under the tag
+  `dry-run-<version>`, the hashes are printed (next to those of the tag's published release, when
+  there is one; rebuilt binaries need not be byte-identical), and the draft is deleted.
+  Without it, the draft is published as the release of the tag. A tag that already has a published
+  release is refused.
+
+The logic that can run on its own is in `scripts/` (`release-check.sh`, `release-notes.sh`,
+`release-sums.sh`, `release-report.sh`; bash, git and the GitHub CLI).
+
 ## Licence
 
 Apache License 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)). Every dependency compiled into

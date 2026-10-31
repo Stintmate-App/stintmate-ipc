@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1+docs.1 (2026-11-01)
+
+- Releases are published by the `release` workflow (`.github/workflows/release.yml`, run by hand):
+  it checks the tag, runs the CI checks, builds the DLL and the conformance tool, and uploads
+  them with the header and `SHA256SUMS`. README, "Releases". The code is unchanged.
+- The Python wheel is no longer part of this repository's releases; it is published by the
+  `stintmate-ipc-python` repository.
+
 ## 0.3.1 (2026-10-31)
 
 - The wire format is unchanged (SPEC revision 2.0), and so are the C ABI (1.0) and the public
