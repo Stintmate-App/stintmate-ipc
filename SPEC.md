@@ -350,6 +350,8 @@ Extension types (including the timestamp type -1) MUST NOT be sent; a receiver S
 treat them as a protocol error. A receiver SHOULD support nesting at least 32 levels deep
 and MAY refuse deeper values as a protocol error.
 
+The reference decoder refuses extension types, non-string or repeated keys, invalid UTF-8, nesting deeper than 64 levels, truncated input and trailing bytes.
+
 Encoders SHOULD use the shortest form of every value (as common MessagePack libraries do);
 decoders MUST accept every valid form (an integer in a wider form than needed, for
 instance). The test vectors' bytes are those of the shortest forms with keys in the order
@@ -409,7 +411,7 @@ Both ends prove they hold a shared 32-byte secret, the **key**, stored in
 
 - **Format:** exactly 64 hexadecimal characters (the 32 key bytes), RECOMMENDED lowercase,
   OPTIONALLY followed by ASCII whitespace (`\r\n` is RECOMMENDED); a UTF-8 BOM at the start
-  SHOULD be accepted. Readers MUST accept upper and lower case and MUST refuse anything
+  SHOULD be accepted (the reference reader also ignores space, tab, CR and LF before the digits). Readers MUST accept upper and lower case and MUST refuse anything
   else (a wrong length, other characters) with an error that names the file.
 - **Creation:** whoever needs the key first and finds no file creates it (in Stintmate,
   the hub's onboarding, but any server or client MAY). Creation MUST be atomic and MUST
@@ -524,7 +526,9 @@ outputs for a fixed key and nonces.
 | `auth.v` not offered | server | `bye` `version_unsupported`, close. |
 | A malformed `hello`, `auth` or `welcome` (missing field, wrong type, nonce not 32 bytes) | receiver | `bye` `protocol_error`, close. |
 | Any other message before the handshake completes | receiver | `bye` `protocol_error`, close. |
-| Server has no key (no file) | server | `bye` `unavailable`, close. |
+| Server has no key (no file) | server | `bye` `unavailable` instead of `hello`, close. |
+| No `auth` within the handshake deadline (15.1) | server | `bye` `timeout`, close. |
+| `welcome.features` names a feature the client did not ask for | client | `bye` `protocol_error`, close. |
 | `hello`, `auth`, `welcome` after the handshake | receiver | Protocol error. |
 
 Neither side sends anything but `hello`/`auth`/`welcome`/`bye` before the handshake
@@ -715,7 +719,7 @@ the owner was down) SHOULD carry an **idempotency key** `ik`.
   `overloaded`, `shutting_down`, and any application code the method documents as
   retryable) do not consume the key: the operation may still be done by a later repeat.
   An owner MUST NOT remember such an answer under the key: a repeat runs the operation
-  again. (The Python package does this for the codes above and `writer_busy`.)
+  again. (The reference implementation does this for the codes above and `writer_busy`.)
 - A caller replaying a queue MUST replay requests of an `ordered` method in their original
   order and wait for each answer before sending the next when later ones depend on earlier
   ones.
@@ -979,7 +983,7 @@ than 1 µs between implementations.
 
 ### 14.3 Mapping to wall-clock time
 
-`hello.clock` = `[t_ns, unix_ns]` read together by the server. A peer MAY use it to show a
+`hello.clock` = `[t_ns, unix_ns]` read together by the server. (The reference endpoint does not send it; a client must not require it.) A peer MAY use it to show a
 `t_ns` as a wall-clock time (`unix = unix_ns + (t - t_ns)`), knowing the wall clock may be
 adjusted later.
 
@@ -989,7 +993,7 @@ adjusted later.
 
 | What | Rule |
 |---|---|
-| Handshake | The server closes a connection whose `auth` has not arrived 5 s after it connected (RECOMMENDED; at most 10 s). A client gives up if `hello` or `welcome` does not come within 5 s. |
+| Handshake | The server closes a connection whose `auth` has not arrived 5 s after it connected (RECOMMENDED; at most 10 s). A client gives up if the whole exchange (`hello` to `welcome`) has not finished within 5 s; the server's 5 s cover `hello` to `auth`. |
 | Requests | The caller chooses the deadline (RECOMMENDED default 5 s; long operations say theirs) and sends it as `dl`. On expiry it sends `cancel`, fails the call locally and ignores a late `res`. An owner SHOULD answer `timeout` without running a request whose deadline already passed when it would start, and MAY abandon work whose deadline passed. |
 | Subscriptions | A `sub` has a deadline like a request (5 s). A late successful `res` for a `sub` the subscriber gave up on SHOULD be followed by an `unsub` of that `sid`. |
 | `bye` | Wait at most 1 s for the peer to close. |
@@ -1393,9 +1397,9 @@ A subscription's `o` map (10.6) is opaque to the protocol: the owner defines it 
 To deliver an event only to some subscribers, the owner keeps the decision on its side: it
 looks at each subscription's peer identity (`app`, `process`) and `o`, and queues the event
 only for those it accepts. An implementation SHOULD offer this as a public filtered publish
-(the Python package: `EventChannel.publish(data, accept=fn)`, where `fn` gets a read-only
-view with the peer, the version, the options and the connection, so an event can go to the
-connection that made a request only), SHOULD serialise the payload once however
+(the Rust crate: `EventChannel::publish_filtered(data, accept)`, where `accept` gets a read-only
+`SubscriptionView` with the peer's identity, its OS process id, the version and the options, so an event can go to the
+subscribers that match a filter only), SHOULD serialise the payload once however
 many subscribers take it, MUST NOT let a failing filter stop the delivery to the others, and
 MUST NOT block. A filtered-out subscriber sees nothing: no `evt`, no gap in `seq` (the
 sequence counts the events sent to that subscription).
@@ -1433,8 +1437,8 @@ sequence counts the events sent to that subscription).
 
 ## Appendix B: the Stintmate endpoints (informative)
 
-The apps of Stintmate decide their endpoints in their own documentation; at the time of
-writing the plan is:
+The apps of Stintmate decide their endpoints in their own documentation. These are the ones
+Stintmate's own apps use; they are not part of the protocol and nothing in this repository's code uses them. Examples:
 
 | Endpoint | Pipe | Served by |
 |---|---|---|
