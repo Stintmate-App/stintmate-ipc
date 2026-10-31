@@ -288,6 +288,14 @@ fn opt_int(m: &Value, t: &str, field: &'static str) -> Result<(), ProtocolError>
     }
 }
 
+/// A field that must be present; any value, nil included, is accepted (SPEC 10.2, 10.8).
+fn req_any(m: &Value, t: &str, field: &'static str) -> Result<(), ProtocolError> {
+    match get(m, field) {
+        Some(_) => Ok(()),
+        None => Err(bad(t, field, "a value")),
+    }
+}
+
 fn req_str(m: &Value, t: &str, field: &'static str) -> Result<(), ProtocolError> {
     match get(m, field) {
         Some(Value::String(_)) => Ok(()),
@@ -324,13 +332,14 @@ pub fn validate_message(message: &Value) -> Result<(), ProtocolError> {
         "res" => {
             req_uint(message, t, "id")?;
             match get(message, "ok") {
-                Some(Value::Boolean(true)) => Ok(()),
+                Some(Value::Boolean(true)) => req_any(message, t, "r"),
                 Some(Value::Boolean(false)) => {
                     let e = get(message, "e").filter(|e| e.is_map());
                     let Some(e) = e else {
                         return Err(bad(t, "e", "a map"));
                     };
                     req_str(e, t, "code")?;
+                    req_str(e, t, "msg")?;
                     opt_uint(e, t, "retry_ms")
                 }
                 _ => Err(bad(t, "ok", "a boolean")),
@@ -355,7 +364,8 @@ pub fn validate_message(message: &Value) -> Result<(), ProtocolError> {
         "evt" => {
             req_uint(message, t, "sid")?;
             req_uint(message, t, "seq")?;
-            opt_int(message, t, "ts")
+            opt_int(message, t, "ts")?;
+            req_any(message, t, "d")
         }
         "decl" => match get(message, "decl") {
             Some(Value::Map(_)) => Ok(()),

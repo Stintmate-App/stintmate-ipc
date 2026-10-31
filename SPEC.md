@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Stintmate IPC v2 specification, revision 2.0 |
-| Status | Draft for review (2026-10-20) |
+| Status | Stable |
 | Wire version | `2` |
 | Reference implementation | the Rust crates and the C ABI (`stintmate_ipc.dll`) in this repository |
 | Test vectors | [`vectors/`](vectors/README.md) |
@@ -364,7 +364,7 @@ A message is a map with a string field `t`, the message type (section 10). A kin
 string `t` is a protocol error, as is trailing data after the value.
 
 Field values in this document are REQUIRED unless marked OPTIONAL; an OPTIONAL field that
-is absent and one that is nil mean the same ("not given"), unless stated otherwise.
+is absent and one that is nil mean the same ("not given"), unless stated otherwise. A REQUIRED field must be present; for `res.r` (when `ok` is true) and `evt.d`, whose value may be any value, nil counts as given and only a missing key is a protocol error.
 
 ### 6.3 Extensibility rules (every receiver)
 
@@ -1417,8 +1417,9 @@ subscribers that match a filter only), SHOULD serialise the payload once however
 many subscribers take it, and MUST NOT block. A filtered-out subscriber sees nothing: no
 `evt`, no gap in `seq` (the sequence counts the events sent to that subscription). In the
 reference implementation the filter returns a plain `bool` and runs on the publishing
-thread; it does not catch a panic in it, which reaches the publisher and stops the delivery
-to the subscriptions not yet visited, so a filter must not panic.
+thread. A panic in it is caught and logged per subscription: that subscription is skipped for
+that event and the others get theirs, so one faulty filter never stops the delivery to the
+rest. An implementation MUST isolate a failing filter in the same way.
 
 ## 20. History
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1 (2026-10-31)
+
+- The wire format is unchanged (SPEC revision 2.0), and so are the C ABI (1.0) and the public
+  Rust API. A connection now refuses, with `bye protocol_error`, messages that were accepted
+  before:
+  - an `evt` without `d`, a successful `res` without `r`, and an error `res` whose `e` has no
+    `msg` (a nil `d` or `r` still counts as given);
+  - a `sub` whose `id` is still in flight as a `req` or another `sub`, and a `req` whose `id` is
+    still in flight as a `sub` (the id is free again once its `res` is written).
+  Every sender in this repository already wrote those fields and used a fresh id each time.
+- A panic in the filter of `EventChannel::publish_filtered` is caught and logged: that
+  subscription skips the event and the others receive it. Before, the panic reached the
+  publisher and the later subscriptions got nothing. SPEC 19.6 states the guarantee.
+- `vectors/errors.json` gains the three missing-field cases. The SPEC status is now Stable.
+
 ## 0.3.0+docs.1 (2026-10-31)
 
 - Documentation corrected against the code. The behaviour and the protocol are unchanged.
@@ -34,3 +49,5 @@ Renamed / changed in the C ABI since 0.2.0:
 - The reference implementation in Rust: core crate, conformance tool, C ABI and the Python
   binding (PyO3, abi3). Replaces the Python implementation of 0.1.x entirely; the protocol
   (`SPEC.md`, revision 2.0) and its test vectors are unchanged.
+
+Earlier 0.1.x tags exist but are not listed here.

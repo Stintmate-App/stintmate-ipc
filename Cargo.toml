@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -15,8 +15,8 @@ repository = "https://github.com/Stintmate-App/stintmate-ipc"
 authors = ["The Stintmate authors"]
 
 [workspace.dependencies]
-stintmate-ipc = { path = "crates/stintmate-ipc", version = "0.3.0" }
-stintmate-ipc-check = { path = "crates/stintmate-ipc-check", version = "0.3.0" }
+stintmate-ipc = { path = "crates/stintmate-ipc", version = "0.3.1" }
+stintmate-ipc-check = { path = "crates/stintmate-ipc-check", version = "0.3.1" }
 bytes = "1.12.1"
 rmpv = "1.3.1"
 thiserror = "2.0.21"

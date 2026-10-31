@@ -322,7 +322,8 @@ fn message_shapes() {
     assert!(ok(m(vec![
         ("t", "res".into()),
         ("id", 1u64.into()),
-        ("ok", true.into())
+        ("ok", true.into()),
+        ("r", Value::Nil)
     ])));
     assert!(!ok(m(vec![("t", "unsub".into())])));
     assert!(ok(m(vec![
@@ -482,4 +483,53 @@ fn names() {
         assert!(!valid_name(bad), "{bad}");
     }
     assert!(valid_name(&"a".repeat(64)));
+}
+
+/// The fields SPEC 10.1 marks REQUIRED: `evt.d`, `res.r` when `ok` is true, and `e.msg`. A nil
+/// value counts as given; only a missing key is refused.
+#[test]
+fn required_payload_fields() {
+    let ok = |v: Value| codec::validate_message(&v).is_ok();
+    let m = |pairs: Vec<(&str, Value)>| codec::map(pairs);
+    let evt = |extra: Vec<(&str, Value)>| {
+        let mut p = vec![
+            ("t", "evt".into()),
+            ("sid", 1u64.into()),
+            ("seq", 1u64.into()),
+        ];
+        p.extend(extra);
+        m(p)
+    };
+    assert!(!ok(evt(vec![])), "evt without d");
+    assert!(ok(evt(vec![("d", Value::Nil)])), "evt with a nil d");
+    assert!(ok(evt(vec![("d", 3u64.into())])));
+    let res_ok = |extra: Vec<(&str, Value)>| {
+        let mut p = vec![
+            ("t", "res".into()),
+            ("id", 1u64.into()),
+            ("ok", true.into()),
+        ];
+        p.extend(extra);
+        m(p)
+    };
+    assert!(!ok(res_ok(vec![])), "ok res without r");
+    assert!(ok(res_ok(vec![("r", Value::Nil)])), "ok res with a nil r");
+    assert!(ok(res_ok(vec![("r", "x".into())])));
+    let res_err = |e: Vec<(&str, Value)>| {
+        m(vec![
+            ("t", "res".into()),
+            ("id", 1u64.into()),
+            ("ok", false.into()),
+            ("e", m(e)),
+        ])
+    };
+    assert!(!ok(res_err(vec![("code", "busy".into())])), "e without msg");
+    assert!(!ok(res_err(vec![
+        ("code", "busy".into()),
+        ("msg", 1u64.into())
+    ])));
+    assert!(ok(res_err(vec![
+        ("code", "busy".into()),
+        ("msg", "".into())
+    ])));
 }

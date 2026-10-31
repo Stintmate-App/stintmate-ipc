@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "stintmate-ipc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "stintmate-ipc-check"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "serde_json",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "stintmate-ipc-ffi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cbindgen",
  "crossbeam-channel",

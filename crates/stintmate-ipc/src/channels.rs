@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use bytes::Bytes;
+use tracing::warn;
 
 use crate::clock::now_ns;
 use crate::codec::{self, Value};
@@ -519,7 +520,8 @@ impl EventChannel {
 
     /// Sends `data` only to the subscriptions `accept` returns true for. The payload is packed
     /// once, and only if some subscription takes it. `accept` runs on the calling thread; it
-    /// must be quick and must not block.
+    /// must be quick and must not block. A panic in `accept` is caught and logged: that
+    /// subscription is skipped for this event and the others are visited as usual.
     pub fn publish_filtered(
         &self,
         data: &Value,
@@ -532,10 +534,20 @@ impl EventChannel {
             let Some(peer) = st.peer() else {
                 return false;
             };
-            accept(&SubscriptionView {
+            let view = SubscriptionView {
                 sub: s,
                 peer: &peer,
-            })
+            };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| accept(&view))) {
+                Ok(take) => take,
+                Err(_) => {
+                    warn!(
+                        sid = s.sid,
+                        "publish filter panicked: the event is skipped for this subscription"
+                    );
+                    false
+                }
+            }
         })
     }
 
