@@ -1,4 +1,4 @@
-//! Channels over real named pipes (the rules of the Python suite's `test_pubsub.py`): events,
+//! Channels over real named pipes: events,
 //! state (snapshot and coalescing), streams (drop-oldest with `dropped`), slow subscribers,
 //! refusals, `send_to`, filtered publish and the symmetric case (the client owns a channel).
 

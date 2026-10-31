@@ -277,8 +277,8 @@ impl Client {
     /// Connects in the background (once).
     ///
     /// With reconnecting off, calling it again after that one attempt or connection ended
-    /// tries once more (a caller that owns the reconnection, like `connect(node=...)` of the
-    /// Python binding); after [`close`](Self::close) it does nothing.
+    /// tries once more (for a caller that owns the reconnection); after [`close`](Self::close)
+    /// it does nothing.
     pub fn start(&self) {
         let mut t = lock(&self.inner.task);
         if self.inner.stop.is_cancelled() {

@@ -15,7 +15,7 @@ use crate::error::RemoteError;
 pub(crate) type Key = (String, String, String);
 
 /// Codes that mean "not done, try later": they never consume a key (SPEC 10.4).
-/// `writer_busy` is an application code of Pitwall's write method.
+/// `writer_busy` is an application code with the same meaning that a method may use.
 const NOT_CACHED: &[&str] = &[
     "busy",
     "unavailable",

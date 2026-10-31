@@ -1,6 +1,6 @@
 //! Stintmate IPC v2: the reference implementation of the protocol described in `SPEC.md`.
 //!
-//! This crate holds, so far (PRY-085 T1), the **codec**: no I/O.
+//! The modules, from the bottom up. The codec, with no I/O:
 //!
 //! * [`wire`]: frames, the incremental [`wire::FrameReader`] with the limits of SPEC 5.2, stream
 //!   samples (5.3) and chunked messages (5.4).
@@ -10,21 +10,21 @@
 //! * [`decl`]: declarations of methods and channels (9.1-9.3).
 //! * [`error`]: the error types.
 //!
-//! PRY-085 T2 adds the connection setup, still without I/O:
+//! The connection setup, still without I/O:
 //!
 //! * [`naming`]: endpoint names, the workspace and the registry (SPEC 4).
 //! * [`keyfile`]: the shared key file (8.1).
 //! * [`handshake`]: `hello`, `auth`, `welcome`, the MACs and the failures (8.2-8.8).
 //! * [`security`]: the current user, user-only DACLs (shared with the pipe listener).
 //!
-//! PRY-085 T3 adds the I/O, on Tokio:
+//! The I/O, on Tokio:
 //!
 //! * [`transport`]: the pipe listener and the client open (SPEC 3).
 //! * [`connection`]: the handshake over a stream, reader/writer tasks, heartbeat, `bye`, calls,
 //!   `prog`/`cancel`, and the [`connection::Handler`] the nodes build on.
 //! * [`calls`]: the table of calls, with one completion path.
 //!
-//! PRY-085 T4 adds the nodes:
+//! The nodes:
 //!
 //! * [`node`], [`channels`], [`endpoint`], [`client`]: methods (ordered, idempotent), the
 //!   three channel kinds, filtered publish, `decl` updates, reconnection and re-subscription.

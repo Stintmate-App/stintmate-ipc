@@ -1,5 +1,5 @@
-//! Conformance checks for Stintmate IPC v2 (PRY-085 T5): the library behind the
-//! `stintmate-ipc-check` tool, so the Python binding and the tests run the same checks.
+//! Conformance checks for Stintmate IPC v2: the library behind the
+//! `stintmate-ipc-check` tool, so the tests run the same checks.
 //!
 //! * [`server`]: S00-S24, against an endpoint (`server <pipe>`).
 //! * [`client`]: C01-C11, serving a test endpoint to a client (`client <pipe>`).

@@ -1,4 +1,4 @@
-//! The C ABI of Stintmate IPC v2 (PRY-085 T8, PRY-095), over the blocking façade.
+//! The C ABI of Stintmate IPC v2, over the blocking façade.
 //!
 //! The rules (also at the top of the generated header):
 //!

@@ -1,4 +1,4 @@
-//! Methods over real named pipes (the rules of the Python suite's `test_rpc.py`): context,
+//! Methods over real named pipes: context,
 //! errors, deadlines and `cancel`, progress, `ordered`, idempotency (SPEC 10.4, 0.1.1 rules),
 //! large payloads, calls in both directions, `decl` updates and `busy`.
 
