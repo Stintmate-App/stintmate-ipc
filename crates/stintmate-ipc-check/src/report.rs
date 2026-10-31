@@ -1,4 +1,4 @@
-//! Check results and their rendering (text and JSON, the format of the Python tool).
+//! Check results and their rendering (text and JSON).
 
 use serde_json::{Map, Value as Json, json};
 

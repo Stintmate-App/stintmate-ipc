@@ -1,5 +1,5 @@
 //! The tool against the Rust implementation: every check passes against a Rust endpoint and a
-//! Rust client (the same checks the Python binding and other implementations are held to).
+//! Rust client (the same checks other implementations are held to).
 
 use std::time::Duration;
 
