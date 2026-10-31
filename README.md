@@ -6,9 +6,9 @@ events, state and stream channels. The protocol is defined in [`SPEC.md`](SPEC.m
 byte-exact test vectors are in [`vectors/`](vectors/).
 
 This repository holds the reference implementation, written in Rust, and its product: the
-native library `stintmate_ipc.dll` with its header `include/stintmate_ipc.h`. Every language,
-Python included, uses the DLL through the C ABI. (Stintmate's own Python package lives in the
-Stintmate monorepo.)
+native library `stintmate_ipc.dll` with its header `crates/stintmate-ipc-ffi/include/stintmate_ipc.h`. Every language,
+Python included, uses the DLL through the C ABI. This repository contains no Python package and
+no examples.
 
 | Path | What |
 |---|---|
@@ -22,8 +22,8 @@ Requirements on Windows: Rust (the version in `rust-toolchain.toml`, installed b
 the MSVC target and the Visual Studio Build Tools C++ workload.
 
 ```
-cargo build --release -p stintmate-ipc-ffi   # target/release/stintmate_ipc.dll, include/stintmate_ipc.h
-cargo build --workspace
+cargo build --release -p stintmate-ipc-ffi   # target/release/stintmate_ipc.dll
+cargo build --workspace                      # also builds the DLL the FFI tests load
 cargo test --workspace
 ```
 
@@ -42,7 +42,9 @@ exported symbol and its signature (`crates/stintmate-ipc-ffi/tests/abi_baseline.
 
 ## The conformance checker
 
-`stintmate-ipc-check` checks an implementation (client or server) against the protocol:
+`stintmate-ipc-check` checks an implementation (client or server) against the protocol. Commands:
+`server <pipe>`, `client <pipe>`, `list` (the workspace's endpoint registry) and `keygen [path]`;
+`--help` prints every option. It exits 0 when every check passed, 1 when one failed, 2 on a usage error.
 
 ```
 cargo run --release -p stintmate-ipc-check -- --help
