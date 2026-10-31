@@ -747,6 +747,28 @@ impl DirectWriter<'_> {
 }
 
 impl Connection {
+    /// Marks request id `id` as in flight for a `sub` waiting for its `res` (SPEC 10.2). A `sub`
+    /// or `req` using an id that is still in flight is a protocol error: it closes the
+    /// connection and this returns false.
+    pub(crate) fn claim_id(&self, id: u64) -> bool {
+        let inner = &self.0;
+        let mut inb = lock(&inner.inbound);
+        if inb.contains_key(&id) {
+            drop(inb);
+            inner.protocol_error(&ProtocolError::InvalidDeclaration(format!(
+                "id {id} reused while in flight"
+            )));
+            return false;
+        }
+        inb.insert(id, inner.closing.child_token());
+        true
+    }
+
+    /// Frees an id taken with [`claim_id`](Self::claim_id), before its `res` is written.
+    pub(crate) fn release_id(&self, id: u64) {
+        lock(&self.0.inbound).remove(&id);
+    }
+
     /// Starts the tasks of a connection whose handshake is done.
     fn start<IO>(
         io: IO,

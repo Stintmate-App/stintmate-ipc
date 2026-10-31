@@ -1125,8 +1125,21 @@ impl PeerState {
 
     // ---- owner side of subscriptions
 
-    fn on_sub(self: &Arc<Self>, msg: &Value) {
+    fn on_sub(self: &Arc<Self>, conn: &Connection, msg: &Value) {
         let Some(id) = uint(msg, "id") else { return };
+        // The id is in flight until the `res` is written; reusing one is a protocol error
+        // (SPEC 10.2, 11.2), whether it belongs to a `req` or to another `sub`.
+        if !conn.claim_id(id) {
+            return;
+        }
+        if !self.sub_claimed(conn, id, msg) {
+            conn.release_id(id);
+        }
+    }
+
+    /// The body of [`on_sub`](Self::on_sub). Returns true when the answer is still pending in
+    /// a task that frees the id itself.
+    fn sub_claimed(self: &Arc<Self>, conn: &Connection, id: u64, msg: &Value) -> bool {
         let name = text(msg, "ch").unwrap_or("");
         let version = uint(msg, "v").unwrap_or(1);
         let options = codec::get(msg, "o")
@@ -1139,7 +1152,7 @@ impl PeerState {
                 id,
                 &RemoteError::new("unknown_channel", format!("unknown channel {name}")),
             );
-            return;
+            return false;
         };
         let version = u32::try_from(version).unwrap_or(u32::MAX);
         if !chan.decl.versions.contains(&version) {
@@ -1152,7 +1165,7 @@ impl PeerState {
                 Value::Array(chan.decl.versions.iter().map(|v| Value::from(*v)).collect()),
             )]));
             self.reply_err(id, &e);
-            return;
+            return false;
         }
         let existing = lock(&self.outsubs)
             .values()
@@ -1164,25 +1177,32 @@ impl PeerState {
             let r = sub_result(&chan, &g, sub.sid, sub.seq());
             drop(g);
             self.reply_ok(id, r);
-            return;
+            return false;
         }
         let hook = lock(&chan.on_subscribe).clone();
         match (hook, self.peer()) {
             (Some(hook), Some(peer)) => {
                 let st = self.clone();
+                let conn = conn.clone();
                 self.node.handle.spawn(async move {
                     let req = SubscribeRequest {
                         peer,
                         version,
                         options: options.clone(),
                     };
-                    match hook(req).await {
+                    let answer = hook(req).await;
+                    conn.release_id(id);
+                    match answer {
                         Ok(()) => st.finish_sub(id, chan, version, options),
                         Err(e) => st.reply_err(id, &e),
                     }
                 });
+                true
             }
-            _ => self.finish_sub(id, chan, version, options),
+            _ => {
+                self.finish_sub(id, chan, version, options);
+                false
+            }
         }
     }
 
@@ -1652,7 +1672,7 @@ impl Handler for PeerHandler {
         let st = &self.0;
         st.attach(conn);
         match text(&message, "t").unwrap_or("") {
-            "sub" => st.on_sub(&message),
+            "sub" => st.on_sub(conn, &message),
             "unsub" => st.on_unsub(&message),
             "end" => st.on_end(&message),
             "evt" => st.on_evt(conn, &message),
