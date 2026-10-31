@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Stintmate IPC v2 specification, revision 2.0 |
-| Status | Draft for review (2026-10-20) |
+| Status | Stable |
 | Wire version | `2` |
 | Reference implementation | the Rust crates and the C ABI (`stintmate_ipc.dll`) in this repository |
 | Test vectors | [`vectors/`](vectors/README.md) |

@@ -1,5 +1,5 @@
 //! The key file on disk: atomic creation, the user-only DACL and re-reading on change. Only
-//! temporary folders: never the driver's key.
+//! temporary folders: never a real key.
 
 use std::fs;
 use std::path::PathBuf;
