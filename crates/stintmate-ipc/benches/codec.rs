@@ -1,4 +1,4 @@
-//! Micro-benchmarks of the codec (plan section 6): `req` encode/decode (~120 bytes), a stream
+//! Micro-benchmarks of the codec: `req` encode/decode (~120 bytes), a stream
 //! frame (48-byte body) and the 12 x f32 layout pack/unpack.
 
 use std::hint::black_box;

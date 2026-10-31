@@ -1,4 +1,4 @@
-//! Connections that come and go (the rules of the Python suite's `test_lifecycle.py`):
+//! Connections that come and go:
 //! reconnection with re-subscription, `bye` codes, hooks, the heartbeat, the registry.
 
 mod common;

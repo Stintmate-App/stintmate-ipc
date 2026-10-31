@@ -14,7 +14,7 @@
 //! cheap handle; its tasks keep running until [`Connection::close`] (or the peer, or an error)
 //! ends it: call [`Connection::wait_closed`] to wait until every task of it has finished.
 //!
-//! The nodes of T4 build on [`Handler`]: it answers the peer's `req`s and sees the messages
+//! The nodes ([`node`](crate::node)) build on [`Handler`]: it answers the peer's `req`s and sees the messages
 //! the connection does not handle itself (`sub`, `unsub`, `end`, `evt`, `decl`, a `res` nobody
 //! waits for) and the stream samples.
 

@@ -1,5 +1,5 @@
 //! The blocking façade over real named pipes: handlers run on the pool and callbacks on the
-//! connection's lane, never on a runtime thread, and in order (plan section 5).
+//! connection's lane, never on a runtime thread, and in order.
 
 mod common;
 
@@ -435,7 +435,7 @@ fn events_published_by_a_pool_handler_arrive_before_its_res() {
     ep.stop();
 }
 
-/// The direct write path (T7c) keeps one order per connection: events, stream samples and
+/// The direct write path keeps one order per connection: events, stream samples and
 /// `res`es written from many threads at once, some directly and some through the queue. Each
 /// publisher's events arrive in its order with no gap, a sample's `seq` only grows, and a
 /// `res` follows every event its handler published (SPEC 13.1-13.3).

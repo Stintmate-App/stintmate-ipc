@@ -1,7 +1,7 @@
 //! The blocking façade: the same surface as the async API, without `async`.
 //!
-//! * One process-wide Tokio runtime with **2 worker threads**, created on first use. Nothing
-//!   written by the embedder ever runs on it (plan section 5).
+//! * One process-wide Tokio runtime with **one worker thread**, created on first use. Nothing
+//!   written by the embedder ever runs on it.
 //! * Method handlers run on a **handler pool** of standard threads (default 8, per node);
 //!   `ordered` methods queue per connection; `inline` ones run on the connection's lane.
 //! * Subscription callbacks and `end` callbacks run on **one lane thread per connection**,
@@ -59,7 +59,7 @@ pub fn wait_for(fut: impl std::future::Future<Output = ()>, limit: Option<Durati
 
 /// The process-wide runtime, created on first use: one I/O worker (handlers and callbacks
 /// run on their own threads, so the runtime only moves bytes; a second worker only added
-/// work-stealing wake-ups, PRY-085 T7c).
+/// work-stealing wake-ups).
 pub fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
     RT.get_or_init(|| {

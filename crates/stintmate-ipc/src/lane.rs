@@ -1,6 +1,6 @@
 //! Where callbacks run. A [`Lane`] runs jobs one at a time, in the order submitted, never on
 //! the thread that submits. The async API's default lane is a Tokio task; the blocking façade
-//! installs a standard thread per connection (plan section 5).
+//! installs a standard thread per connection.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;

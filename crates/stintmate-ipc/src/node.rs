@@ -992,7 +992,7 @@ impl PeerState {
         self.pump.notify.notify_one();
     }
 
-    /// The fast path of an offer (plan section 6, T7c): when the pump has nothing queued or
+    /// The fast path of an offer: when the pump has nothing queued or
     /// in hand and the connection's writer is idle, the offering thread writes what `sub`
     /// queued itself, with no wake-up of the pump or of the writer. False when the pump must
     /// take it (then the subscription is still scheduled).
