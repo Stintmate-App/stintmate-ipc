@@ -597,3 +597,57 @@ async fn a_decl_refused_by_a_full_queue_is_delivered_later() {
     c.close().await;
     ep.stop().await;
 }
+
+/// SPEC 19.6: a filter that panics costs only its own subscription the event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_publish_filter_skips_only_its_subscription() {
+    let (pipe, k) = (pipe_name(), key());
+    let ep = endpoint(&pipe, k);
+    ep.start().await.unwrap();
+    let ev = ep.event_channel("test.e", &[1]).unwrap();
+    let mut cs = Vec::new();
+    let mut sinks = Vec::new();
+    let mut keep = Vec::new();
+    for i in 0..2 {
+        let c = stintmate_ipc::Client::new(
+            &pipe,
+            stintmate_ipc::handshake::PeerInfo::new("app"),
+            ks(k),
+        )
+        .unwrap();
+        c.start();
+        c.wait_connected(Duration::from_secs(5)).await.unwrap();
+        let sink = Sink::default();
+        let opts = SubscribeOptions {
+            options: Some(map([("n", Value::from(i as i64))])),
+            ..SubscribeOptions::default()
+        };
+        keep.push(c.subscribe("test.e", opts, sink.callback()).await);
+        sinks.push(sink);
+        cs.push(c);
+    }
+    assert_eq!(ev.subscriber_count(), 2);
+    // Whichever order the subscriptions are visited in, the one with n == 0 panics.
+    let n = ev
+        .publish_filtered(&Value::from("x"), |v| {
+            if v.option("n") == Some(&Value::from(0)) {
+                panic!("a faulty filter");
+            }
+            true
+        })
+        .unwrap();
+    assert_eq!(n, 1);
+    eventually(3, "the delivery", || sinks[1].len() == 1).await;
+    assert_eq!(sinks[1].data(), vec![Value::from("x")]);
+    assert_eq!(sinks[0].len(), 0);
+    // Both subscriptions are still alive.
+    assert_eq!(ev.publish(&Value::from("y")).unwrap(), 2);
+    eventually(3, "the next event", || {
+        sinks[0].len() == 1 && sinks[1].len() == 2
+    })
+    .await;
+    for c in cs {
+        c.close().await;
+    }
+    ep.stop().await;
+}

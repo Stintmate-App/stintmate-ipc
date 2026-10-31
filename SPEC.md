@@ -1417,8 +1417,9 @@ subscribers that match a filter only), SHOULD serialise the payload once however
 many subscribers take it, and MUST NOT block. A filtered-out subscriber sees nothing: no
 `evt`, no gap in `seq` (the sequence counts the events sent to that subscription). In the
 reference implementation the filter returns a plain `bool` and runs on the publishing
-thread; it does not catch a panic in it, which reaches the publisher and stops the delivery
-to the subscriptions not yet visited, so a filter must not panic.
+thread. A panic in it is caught and logged per subscription: that subscription is skipped for
+that event and the others get theirs, so one faulty filter never stops the delivery to the
+rest. An implementation MUST isolate a failing filter in the same way.
 
 ## 20. History
 
