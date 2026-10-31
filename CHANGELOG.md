@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0+docs.1 (2026-10-31)
+
+- Documentation corrected against the code. The behaviour and the protocol are unchanged.
+
 ## 0.3.0 (2026-10-26)
 
 - ABI 1.0: a complete C ABI for `stintmate_ipc.dll` (nodes, peers, calls, subscriptions,
