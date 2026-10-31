@@ -102,6 +102,24 @@
       "hex": "0c0000000182a174a461757468a17602",
       "expect": "protocol_error",
       "why": "handshake messages after the handshake"
+    },
+    {
+      "name": "evt_without_d",
+      "hex": "120000000183a174a3657674a373696401a373657101",
+      "expect": "protocol_error",
+      "why": "evt.d is required (it may be nil, it may not be absent)"
+    },
+    {
+      "name": "res_ok_without_r",
+      "hex": "100000000183a174a3726573a2696401a26f6bc3",
+      "expect": "protocol_error",
+      "why": "res.r is required when ok is true (it may be nil, it may not be absent)"
+    },
+    {
+      "name": "res_error_without_msg",
+      "hex": "1d0000000184a174a3726573a2696401a26f6bc2a16581a4636f6465a462757379",
+      "expect": "protocol_error",
+      "why": "e.msg is required in an error response"
     }
   ]
 }

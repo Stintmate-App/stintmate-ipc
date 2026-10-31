@@ -364,7 +364,7 @@ A message is a map with a string field `t`, the message type (section 10). A kin
 string `t` is a protocol error, as is trailing data after the value.
 
 Field values in this document are REQUIRED unless marked OPTIONAL; an OPTIONAL field that
-is absent and one that is nil mean the same ("not given"), unless stated otherwise.
+is absent and one that is nil mean the same ("not given"), unless stated otherwise. A REQUIRED field must be present; for `res.r` (when `ok` is true) and `evt.d`, whose value may be any value, nil counts as given and only a missing key is a protocol error.
 
 ### 6.3 Extensibility rules (every receiver)
 
