@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1+docs.2 (2026-11-01)
+
+- The `release` workflow brings a pinned GitHub CLI when the runner has none, and its tag check
+  stops when `gh` is missing instead of reading that as "no release yet". The code is unchanged.
+
 ## 0.3.1+docs.1 (2026-11-01)
 
 - Releases are published by the `release` workflow (`.github/workflows/release.yml`, run by hand):

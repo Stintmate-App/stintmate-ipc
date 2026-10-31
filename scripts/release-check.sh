@@ -8,6 +8,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 tag=${1:?usage: release-check.sh <tag> <dry_run>}
 dry_run=${2:-true}
 fail() { echo "release-check: $*" >&2; exit 1; }
+command -v gh > /dev/null || fail "the GitHub CLI (gh) is not on PATH"
 
 case $tag in
   *+*) fail "'$tag' is a metadata tag: a '+' tag changes no code and has no release assets. Release the tag without the '+' part." ;;
