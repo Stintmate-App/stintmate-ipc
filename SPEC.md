@@ -603,9 +603,9 @@ A **layout**:
   `^[a-z][a-z0-9_]{0,63}$` and is unique; `type` is one of `u8 i8 u16 i16 u32 i32 u64 i64
   f32 f64`; `count` (1-4096, default 1) makes an array of that many consecutive values.
 - Fields are packed **in order, little-endian, with no padding or alignment**; floats are
-  IEEE 754. `size` is the sum of the field sizes and MUST match it; a body is exactly
+  IEEE 754. `size` is the sum of the field sizes; the reference implementation always sends it and refuses a layout whose `size` differs from the sum (it accepts a layout without `size`); a body is exactly
   `size` bytes; layouts are at most 65536 bytes and 1024 fields.
-- `name` is OPTIONAL and informative.
+- `name` is OPTIONAL and informative. `fields` is not empty (the reference implementation refuses a layout without fields).
 - Owners SHOULD put fields wider than one byte at offsets that are multiples of their size
   (pad with explicit `u8` fields) so readers can map the body onto a struct; the protocol
   does not require it.
@@ -687,7 +687,7 @@ Rules:
 ### 10.3 Long requests: `prog` and `cancel`
 
 - `prog` (owner): the request `id` is still being worked on. `d` OPTIONAL, any value (a
-  progress report). `dl` OPTIONAL: a new deadline in milliseconds from now; the caller
+  progress report). `dl` OPTIONAL: a new deadline in milliseconds from now (the reference implementation ignores 0); the caller
   SHOULD then wait until then instead of its original deadline. A `prog` for an id the
   caller is not waiting for is ignored.
 - `cancel` (caller): it gave up on request `id` (its deadline passed, or its user went
@@ -719,7 +719,7 @@ the owner was down) SHOULD carry an **idempotency key** `ik`.
   `overloaded`, `shutting_down`, and any application code the method documents as
   retryable) do not consume the key: the operation may still be done by a later repeat.
   An owner MUST NOT remember such an answer under the key: a repeat runs the operation
-  again. (The reference implementation does this for the codes above and `writer_busy`.)
+  again. (The reference implementation does this for the codes above and for `writer_busy`, an application code that a method may use for the same meaning.) The reference implementation keeps the answers by (peer `app`, method, `ik`) in memory only, for the life of the process or an optional time limit, at most 4096 of them (the oldest are dropped); a repeat that waits is released after the request's `dl` or 30 s with `busy` and `retry_ms` 500. Keeping keys longer is the application's job.
 - A caller replaying a queue MUST replay requests of an `ordered` method in their original
   order and wait for each answer before sending the next when later ones depend on earlier
   ones.
@@ -965,7 +965,7 @@ synchronisation.
 | Python | `time.perf_counter_ns()` (QPC on Windows) |
 | C# | `Stopwatch.GetTimestamp()` scaled by `Stopwatch.Frequency` (QPC) |
 | C/C++ | `QueryPerformanceCounter` / `QueryPerformanceFrequency` |
-| Rust | `windows::Win32::System::Performance::QueryPerformanceCounter` (`Instant` hides it) |
+| Rust | `QueryPerformanceCounter` (for example through the `windows-sys` crate) (`Instant` hides it) |
 | Go | `QueryPerformanceCounter` through `golang.org/x/sys/windows` (`time.Now` hides it) |
 | Node | `process.hrtime.bigint()` (libuv uses QPC on Windows) |
 
@@ -1056,14 +1056,25 @@ implements (a client only, or a server too). The RECOMMENDED way to check:
    ([README](README.md#the-conformance-checker)). Both print a report with the section of
    this document behind each check; attach it to an issue if you need help.
 
-The checks cover at least: the hello fields; MAC verification both ways; refusal of wrong
-MACs, unsupported versions, malformed `auth` and silent clients; `ping`; ignoring unknown
-types, keys and reserved kinds; `unknown_method`, `unknown_channel`,
-`version_unsupported`; chunk reassembly; exact echo of large ids; protocol errors for
-invalid kinds, oversized frames, non-map messages and messages inside chunk transfers;
-every declared channel (response fields, snapshots, layouts, monotonic `seq` and `t_ns`,
-body sizes, observed rate against `rate_hz`); duplicate subscriptions; heartbeat pings;
-`bye`; a client's reconnection and its refusal of a wrong server MAC.
+`server` checks, on the endpoint under test: the `hello` fields; the `welcome`, the server
+MAC and the declarations; refusal of a wrong client MAC, of an unsupported protocol version
+and of a malformed `auth`; a silent client being closed at the handshake deadline; `ping`;
+ignoring unknown message types and keys and the reserved frame kind `0x80`;
+`unknown_method`, `unknown_channel` and `version_unsupported` (for a method); chunk
+reassembly; exact echo of a large request id; a protocol error for an unknown frame kind, a
+frame over `max_frame`, a message that is not a map and a message frame inside a chunked
+transfer; for every declared channel, the `sub` response, the snapshot, the layout, the
+order of `seq` and `t_ns`, body sizes and the observed rate against `rate_hz`; the same
+subscription twice; the methods you name with `--call`; a heartbeat `ping` on an idle
+connection; an ignored `cancel` for an unknown id; and `bye`. The two checks that wait for
+timeouts (the silent client and the heartbeat) are skipped with `--fast`.
+
+`client` serves a test endpoint and checks the client that connects to it: its `auth`
+(version, nonce, MAC, identity); that it answers `ping`, ignores unknown message types and
+keys, accepts `unknown_method` and reassembles a chunked message; that every message it
+sends is well formed (10); that every channel it declares can be subscribed to and
+delivers valid items; that it reconnects after a `bye` `shutting_down`; and that it closes the
+connection when the server MAC is wrong.
 
 ## 18. Security considerations
 
@@ -1184,6 +1195,8 @@ or a periodic sweep), as section 15 requires.
 
 ### 19.3 C# sketch (.NET 8)
 
+Not compiled by the maintainers (no .NET SDK in the build environment); it assumes the implicit `using` directives of a .NET 8 project (`System`, `System.IO`, `System.Linq`, `System.Threading.Tasks`, `System.Collections.Generic`).
+
 ```csharp
 using System.Buffers.Binary;
 using System.IO.Pipes;
@@ -1284,11 +1297,12 @@ PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.FirstPipeInsta
 
 ### 19.4 Rust sketch (Tokio)
 
+Checked to compile on Windows with `hmac` 0.12, `sha2` 0.10, `rand` 0.8, `subtle` 2, `rmpv` 1 and `tokio` 1 (features `net`, `io-util`, `rt`, `macros`); newer major versions of `hmac`, `sha2` and `rand` renamed some of the items used here.
+
 ```rust
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
-use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use rmpv::Value; // rmp + rmpv for dynamic MessagePack values
@@ -1400,9 +1414,11 @@ only for those it accepts. An implementation SHOULD offer this as a public filte
 (the Rust crate: `EventChannel::publish_filtered(data, accept)`, where `accept` gets a read-only
 `SubscriptionView` with the peer's identity, its OS process id, the version and the options, so an event can go to the
 subscribers that match a filter only), SHOULD serialise the payload once however
-many subscribers take it, MUST NOT let a failing filter stop the delivery to the others, and
-MUST NOT block. A filtered-out subscriber sees nothing: no `evt`, no gap in `seq` (the
-sequence counts the events sent to that subscription).
+many subscribers take it, and MUST NOT block. A filtered-out subscriber sees nothing: no
+`evt`, no gap in `seq` (the sequence counts the events sent to that subscription). In the
+reference implementation the filter returns a plain `bool` and runs on the publishing
+thread; it does not catch a panic in it, which reaches the publisher and stops the delivery
+to the subscriptions not yet visited, so a filter must not panic.
 
 ## 20. History
 
