@@ -1,0 +1,145 @@
+name: release
+
+# Publishes the assets of a release tag (Actions > release > Run workflow). By hand only, like ci.
+# The workflow runs from `main`; the tag's tree is checked out into `tree/`, so tags made before
+# this workflow existed can be released. The scripts in `scripts/` come from `main` and read the
+# tag only through git.
+#   tag      the release tag, vMAJOR.MINOR.PATCH (a tag with `+` is refused: it changes no code and
+#            has no assets). It must be on main and equal v + the workspace version in Cargo.toml,
+#            and CHANGELOG.md must have its `## <version>` section.
+#   dry_run  (default true) builds, checks and uploads to a draft named `dry-run-<tag>` under the
+#            tag `dry-run-<version>`, verifies the download, prints the hashes (against the published
+#            release of the tag, if there is one) and deletes the draft. The published release is
+#            never touched. A real run refuses a tag that already has a published release.
+# Same checks as ci.yml, then `cargo build --release` of the DLL and the conformance tool.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vMAJOR.MINOR.PATCH)
+        type: string
+        required: true
+      dry_run:
+        description: Dry run (draft under a dry-run tag, deleted at the end)
+        type: boolean
+        default: true
+      runner:
+        description: Where to run
+        type: choice
+        options: [stintmate-win, windows-latest]
+        default: stintmate-win
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  TAG: ${{ inputs.tag }}
+  DRY_RUN: ${{ inputs.dry_run }}
+
+jobs:
+  # One job: every job pays the runner's start, and the runner takes one job at a time.
+  release:
+    runs-on: ${{ inputs.runner == 'windows-latest' && 'windows-latest' || fromJSON('["self-hosted", "stintmate-win"]') }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the tag
+        id: check
+        run: |
+          git fetch --tags --force origin
+          scripts/release-check.sh "$TAG" "$DRY_RUN" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: tree
+      - name: Toolchain (from the tag's rust-toolchain.toml)
+        working-directory: tree
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tree
+      - run: cargo fmt --all --check
+        working-directory: tree
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: tree
+      # The C ABI DLL the tests use (cargo test does not build cdylibs).
+      - run: cargo build --workspace
+        working-directory: tree
+      - run: cargo test --workspace
+        working-directory: tree
+      # cargo-deny: installed on stintmate-win; GitHub's runner installs it here.
+      - if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check licenses advisories bans sources
+        working-directory: tree
+      - name: Build the release binaries
+        working-directory: tree
+        run: cargo build --release -p stintmate-ipc-ffi -p stintmate-ipc-check --locked
+      - name: Assets, checksums and notes
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          mkdir assets
+          cp tree/target/release/stintmate_ipc.dll tree/target/release/stintmate-ipc-check.exe \
+             tree/crates/stintmate-ipc-ffi/include/stintmate_ipc.h assets/
+          scripts/release-sums.sh assets stintmate_ipc.dll stintmate-ipc-check.exe stintmate_ipc.h
+          cat assets/SHA256SUMS
+          git show "${{ steps.check.outputs.sha }}:CHANGELOG.md" > changelog.md
+          scripts/release-notes.sh changelog.md "$VERSION" > notes.md
+      - name: Draft release
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          SHA: ${{ steps.check.outputs.sha }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            # Only ever the dry-run draft is replaced, never a release of the real tag.
+            gh release delete "dry-run-$VERSION" --yes 2>/dev/null || true
+            gh release create "dry-run-$VERSION" --draft --target "$SHA" \
+              --title "dry-run-$TAG" --notes-file notes.md assets/*
+          else
+            gh release create "$TAG" --draft --verify-tag \
+              --title "$VERSION" --notes-file notes.md assets/*
+          fi
+      - name: Verify the uploaded assets
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then rel="dry-run-$VERSION"; else rel="$TAG"; fi
+          mkdir verify
+          gh release download "$rel" --dir verify
+          for f in assets/*; do
+            cmp "$f" "verify/$(basename "$f")" || { echo "::error::$(basename "$f") differs after the upload"; exit 1; }
+          done
+          (cd verify && sha256sum --check SHA256SUMS)
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: gh release edit "$TAG" --draft=false
+      - name: Dry run report
+        if: ${{ inputs.dry_run }}
+        run: |
+          pub=""
+          if [ "${{ steps.check.outputs.published }}" = true ]; then pub="$TAG"; fi
+          scripts/release-report.sh verify "$pub"
+      - name: Delete the dry-run draft
+        if: ${{ always() && inputs.dry_run && steps.check.outcome == 'success' }}
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          if [ "$(gh release view "dry-run-$VERSION" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+            gh release delete "dry-run-$VERSION" --yes
+          fi
