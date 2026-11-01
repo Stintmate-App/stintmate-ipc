@@ -1,4 +1,4 @@
-//! Peers, calls and subscriptions through the C functions (spec 2.6), against a core
+//! Peers, calls and subscriptions through the C functions, against a core
 //! endpoint on a random pipe with a random key. Counters are global: tests run one at a time.
 
 mod common;

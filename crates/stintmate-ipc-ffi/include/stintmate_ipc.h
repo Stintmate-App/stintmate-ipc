@@ -351,7 +351,7 @@ typedef struct {
 } stintmate_ipc_key_source;
 
 /**
- * Options of a client (spec 2.7); `struct_size` is `sizeof`.
+ * Options of a client; `struct_size` is `sizeof`.
  */
 typedef struct {
   /**
@@ -395,7 +395,7 @@ typedef int64_t (*stintmate_ipc_reconnect_policy_cb)(void *user_data,
 typedef void (*stintmate_ipc_progress_cb)(void *user_data, const uint8_t *data, size_t len);
 
 /**
- * Options of a call (spec 2.6); `struct_size` is `sizeof`.
+ * Options of a call; `struct_size` is `sizeof`.
  */
 typedef struct {
   /**
@@ -488,7 +488,7 @@ typedef void (*stintmate_ipc_end_cb)(void *user_data,
                                      const char *message);
 
 /**
- * Options of a subscription (spec 2.6); `struct_size` is `sizeof`.
+ * Options of a subscription; `struct_size` is `sizeof`.
  */
 typedef struct {
   /**
@@ -531,7 +531,7 @@ typedef struct {
 } stintmate_ipc_subscribe_opts;
 
 /**
- * Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. Zero (or null) fields mean the
+ * Options of an endpoint; `struct_size` is `sizeof`. Zero (or null) fields mean the
  * default.
  */
 typedef struct {
@@ -592,7 +592,7 @@ typedef void (*stintmate_ipc_handshake_failed_cb)(void *user_data,
                                                   size_t len);
 
 /**
- * Options of a method (spec 2.5); `struct_size` is `sizeof`.
+ * Options of a method; `struct_size` is `sizeof`.
  */
 typedef struct {
   /**
@@ -1019,7 +1019,7 @@ int32_t stintmate_ipc_ensure_key(const char *path, stintmate_ipc_buffer *key_out
  * Reads the key file at `path` (it must exist) into `key_out` as 32 raw bytes.
  *
  * # Safety
- * `path` NUL-terminated; `key_out_buf` valid for a write.
+ * `path` NUL-terminated; `key_out` valid for a write.
  */
 int32_t stintmate_ipc_read_key(const char *path, stintmate_ipc_buffer *key_out);
 
@@ -1028,12 +1028,12 @@ int32_t stintmate_ipc_read_key(const char *path, stintmate_ipc_buffer *key_out);
  * bytes.
  *
  * # Safety
- * `text` valid for `len` bytes; `key_out_buf` valid for a write.
+ * `text` valid for `len` bytes; `key_out` valid for a write.
  */
 int32_t stintmate_ipc_parse_key(const uint8_t *text, size_t len, stintmate_ipc_buffer *key_out);
 
 /**
- * Formats 32 raw key bytes as key file text (64 lowercase hex digits and a newline).
+ * Formats 32 raw key bytes as key file text (64 lowercase hex digits and CRLF).
  *
  * # Safety
  * `key` valid for `len` bytes; `text_out` valid for a write.
@@ -1293,7 +1293,7 @@ int32_t stintmate_ipc_state_channel(stintmate_ipc_node *node,
 
 /**
  * Declares a stream channel. `layout` is the MessagePack form of the layout (see
- * `stintmate_ipc_layout_normalize`). `rate_hz` 0 means unlimited; `queue` 0 the default ring.
+ * `stintmate_ipc_layout_normalize`). `rate_hz` 0 declares no nominal rate (a positive value is the rate in Hz); `queue` 0 the default ring (one second at `rate_hz`, at least 64 samples; 256 without a rate).
  *
  * # Safety
  * As [`stintmate_ipc_event_channel`]; `layout` valid for `layout_len` bytes.

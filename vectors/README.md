@@ -8,7 +8,7 @@ expected content, compute the MACs, and feed the error cases to its receiver.
 |---|---|
 | `frames.json` | Frames after the handshake: requests, responses, errors, subscriptions, events, a stream sample with its layout, a chunked message with a stream sample between its chunks, a reserved kind, unknown types and keys. |
 | `handshake.json` | A full handshake with a fixed key and nonces: the key file bytes, the exact MAC inputs and outputs, the three frames (`hello`, `auth`, `welcome`), a wrong key, and the MAC for another pipe name. |
-| `errors.json` | Bytes received after a handshake that must end the connection with `bye protocol_error` (receiver `max_frame` 1048576). |
+| `errors.json` | 20 stateless cases: bytes received after a handshake that must end the connection with `bye protocol_error` (receiver `max_frame` 1048576). It is not the full list of protocol errors: those that need state (a reused request id, an invalid declaration, an `evt` or kind-2 frame against the subscription's kind, a stream body of the wrong size for a known `sid`) and trailing data after a MessagePack value have no vector. |
 | `keyfile.json` | Valid and invalid key file contents. |
 | `layouts.json` | Stream layouts, values and the packed bytes (every field type, arrays). |
 

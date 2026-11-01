@@ -1,4 +1,4 @@
-//! The server side of the C ABI: the endpoint (spec 2.7, endpoint half). What it offers
+//! The server side of the C ABI: the endpoint. What it offers
 //! (methods, channels, hooks) is on its node (`node.rs`).
 
 use std::ffi::{c_char, c_void};
@@ -29,7 +29,7 @@ pub struct stintmate_ipc_endpoint {
     _handle: Handle,
 }
 
-/// Options of an endpoint (spec 2.7); `struct_size` is `sizeof`. Zero (or null) fields mean the
+/// Options of an endpoint; `struct_size` is `sizeof`. Zero (or null) fields mean the
 /// default.
 #[repr(C)]
 #[allow(non_camel_case_types)]

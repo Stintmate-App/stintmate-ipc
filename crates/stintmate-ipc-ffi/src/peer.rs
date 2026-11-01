@@ -1,4 +1,4 @@
-//! Peers, calls and subscriptions (spec 2.6): the handle of one connection, calls in flight
+//! Peers, calls and subscriptions: the handle of one connection, calls in flight
 //! with their `on_done` hook, and subscriptions (of a peer, or kept by a client).
 
 use std::ffi::{CString, c_char, c_void};
@@ -461,7 +461,7 @@ pub unsafe extern "C" fn stintmate_ipc_peer_close(
 pub type stintmate_ipc_progress_cb =
     Option<unsafe extern "C-unwind" fn(user_data: *mut c_void, data: *const u8, len: usize)>;
 
-/// Options of a call (spec 2.6); `struct_size` is `sizeof`.
+/// Options of a call; `struct_size` is `sizeof`.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_call_opts {
@@ -980,7 +980,7 @@ pub type stintmate_ipc_end_cb = Option<
     ),
 >;
 
-/// Options of a subscription (spec 2.6); `struct_size` is `sizeof`.
+/// Options of a subscription; `struct_size` is `sizeof`.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_subscribe_opts {

@@ -1,4 +1,4 @@
-//! A connector made only through the DLL (spec 2.7 with 2.5), as the connector protocol
+//! A connector made only through the DLL, as the connector protocol
 //! section 2 has it: a client that declares and offers `connector.status` (state) and
 //! `connector.action` (method) to Pitwall (played here by a core endpoint), and calls one of
 //! Pitwall's write methods.

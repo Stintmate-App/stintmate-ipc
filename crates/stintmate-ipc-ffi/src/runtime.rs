@@ -1,4 +1,4 @@
-//! The library's runtime (spec 2.2): the hooks thread and the log thread, the log callback,
+//! The library's runtime: the hooks thread and the log thread, the log callback,
 //! the thread hooks, `user_data` release bookkeeping, handle counting and shutdown.
 //!
 //! Every callback the library makes into the caller goes through [`enter`]: it fails once

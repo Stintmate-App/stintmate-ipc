@@ -1,4 +1,4 @@
-//! Keys, naming and layouts (spec 2.4): the stateless helpers of the C ABI.
+//! Keys, naming and layouts: the stateless helpers of the C ABI.
 
 use std::ffi::c_char;
 use std::mem::offset_of;
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn stintmate_ipc_ensure_key(
 /// Reads the key file at `path` (it must exist) into `key_out` as 32 raw bytes.
 ///
 /// # Safety
-/// `path` NUL-terminated; `key_out_buf` valid for a write.
+/// `path` NUL-terminated; `key_out` valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_read_key(
     path: *const c_char,
@@ -194,7 +194,7 @@ pub unsafe extern "C" fn stintmate_ipc_read_key(
 /// bytes.
 ///
 /// # Safety
-/// `text` valid for `len` bytes; `key_out_buf` valid for a write.
+/// `text` valid for `len` bytes; `key_out` valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stintmate_ipc_parse_key(
     text: *const u8,
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn stintmate_ipc_parse_key(
     })
 }
 
-/// Formats 32 raw key bytes as key file text (64 lowercase hex digits and a newline).
+/// Formats 32 raw key bytes as key file text (64 lowercase hex digits and CRLF).
 ///
 /// # Safety
 /// `key` valid for `len` bytes; `text_out` valid for a write.

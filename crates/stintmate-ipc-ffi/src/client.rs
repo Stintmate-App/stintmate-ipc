@@ -1,4 +1,4 @@
-//! The client side of the C ABI (spec 2.7): the client that stays connected, its calls and
+//! The client side of the C ABI: the client that stays connected, its calls and
 //! subscriptions, `connect` and the reconnection hooks.
 
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -112,7 +112,7 @@ pub struct stintmate_ipc_client(
     pub(crate) crate::node::stintmate_ipc_node,
 );
 
-/// Options of a client (spec 2.7); `struct_size` is `sizeof`.
+/// Options of a client; `struct_size` is `sizeof`.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_client_opts {
