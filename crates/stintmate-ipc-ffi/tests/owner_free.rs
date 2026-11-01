@@ -81,7 +81,8 @@ fn every_connection_id_is_the_peer_id() {
     let peer = fx.start();
     let _sub = peer.subscribe("ev", Default::default(), |_| {}).unwrap();
     wait_for("the hooks", || {
-        l.lines().iter().any(|s| s.starts_with("sub:"))
+        let lines = l.lines();
+        lines.iter().any(|s| s.starts_with("sub:")) && lines.iter().any(|s| s.starts_with("peer:1:"))
     });
 
     // The peer from the peers list.

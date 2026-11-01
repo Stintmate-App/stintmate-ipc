@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1+docs.4 (2026-11-01)
+
+- A test of the C ABI waits for both hooks: they run on different handler threads, so the order is
+  not fixed. It failed on GitHub-hosted Windows runners. The library is unchanged.
+
 ## 0.3.1+docs.3 (2026-11-01)
 
 - The `release` workflow expects `gh` on the runner, as GitHub's Windows image has it, and no
