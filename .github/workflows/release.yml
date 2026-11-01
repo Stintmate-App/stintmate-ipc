@@ -54,21 +54,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # GitHub's image has gh; a self-hosted runner may not: a pinned copy, its hash from the
-      # checksums file of that gh release.
-      - name: GitHub CLI
-        shell: pwsh
-        run: |
-          if (Get-Command gh -ErrorAction SilentlyContinue) { gh --version; exit 0 }
-          $version = '2.103.3'
-          $sha256 = '98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0'
-          $zip = Join-Path $env:RUNNER_TEMP 'gh.zip'
-          $dir = Join-Path $env:RUNNER_TEMP 'gh'
-          Invoke-WebRequest -UseBasicParsing -OutFile $zip `
-            -Uri "https://github.com/cli/cli/releases/download/v$version/gh_${version}_windows_amd64.zip"
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha256) { throw 'gh: wrong SHA-256' }
-          Expand-Archive $zip $dir -Force
-          Add-Content $env:GITHUB_PATH (Join-Path $dir 'bin')
       - name: Check the tag
         id: check
         run: |
