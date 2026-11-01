@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 (2026-11-01)
+
+- A release built by the `release` workflow on GitHub-hosted runners. Earlier binaries were built on
+  a development PC and carry its paths in their panic locations. The wire format, the C ABI and the
+  public Rust API are unchanged.
+
 ## 0.3.1+docs.4 (2026-11-01)
 
 - A test of the C ABI waits for both hooks: they run on different handler threads, so the order is
