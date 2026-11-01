@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 (2026-11-01)
+
+- C ABI: `stintmate_ipc_channel_close` with no code now ends subscriptions with `channel_closed`, as
+  the specification and the Rust API do; it sent `closed`, a code in no table. The wire format and
+  the Rust API are unchanged.
+
 ## 0.3.2+docs.2 (2026-11-01)
 
 - The repository is prepared for being public: the workflows run on GitHub-hosted Windows runners only (the `runner` input is gone), `SECURITY.md` says how to report a vulnerability, and the README has a "Contributing" section. The code is unchanged.

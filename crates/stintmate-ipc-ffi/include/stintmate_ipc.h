@@ -1333,7 +1333,7 @@ int64_t stintmate_ipc_channel_subscribers(stintmate_ipc_channel *ch);
 int32_t stintmate_ipc_channel_is_active(stintmate_ipc_channel *ch);
 
 /**
- * Ends every subscription (`end` with `code`, default `closed`) and withdraws the channel.
+ * Ends every subscription (`end` with `code`, default `channel_closed`) and withdraws the channel.
  *
  * # Safety
  * `ch` valid; strings NUL-terminated or null.
