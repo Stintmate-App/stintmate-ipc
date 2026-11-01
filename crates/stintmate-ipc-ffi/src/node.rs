@@ -1,4 +1,4 @@
-//! Nodes (spec 2.5): what an endpoint or a client offers to the peers connected to it.
+//! Nodes: what an endpoint or a client offers to the peers connected to it.
 //!
 //! A node is borrowed from its owner (`stintmate_ipc_endpoint_node`,
 //! `stintmate_ipc_client_node`): methods with options, requests, event/state/stream
@@ -179,7 +179,7 @@ unsafe fn node_ref<'a>(node: *mut stintmate_ipc_node) -> Result<&'a stintmate_ip
 
 // ------------------------------------------------------------------------ methods
 
-/// Options of a method (spec 2.5); `struct_size` is `sizeof`.
+/// Options of a method; `struct_size` is `sizeof`.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct stintmate_ipc_method_opts {
@@ -932,7 +932,7 @@ pub unsafe extern "C" fn stintmate_ipc_state_channel(
 }
 
 /// Declares a stream channel. `layout` is the MessagePack form of the layout (see
-/// `stintmate_ipc_layout_normalize`). `rate_hz` 0 means unlimited; `queue` 0 the default ring.
+/// `stintmate_ipc_layout_normalize`). `rate_hz` 0 declares no nominal rate (a positive value is the rate in Hz); `queue` 0 the default ring (one second at `rate_hz`, at least 64 samples; 256 without a rate).
 ///
 /// # Safety
 /// As [`stintmate_ipc_event_channel`]; `layout` valid for `layout_len` bytes.

@@ -1,4 +1,4 @@
-//! Nodes (spec 2.5): methods with options, requests, peers and declarations, on an endpoint
+//! Nodes: methods with options, requests, peers and declarations, on an endpoint
 //! and on a client. The other end is the core's own blocking API.
 
 mod common;

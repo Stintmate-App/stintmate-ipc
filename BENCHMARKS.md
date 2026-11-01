@@ -1,7 +1,7 @@
 # Benchmarks
 
 These figures were measured during development, on Windows 11 on a desktop PC in use at the
-time (no isolated benchmark machine), and have not been re-measured on the v0.3.0 tag.
+time (no isolated benchmark machine), and were not re-measured on later releases; the CPU model and the commit were not recorded.
 Treat them as orders of magnitude for this implementation, not as guarantees. Latencies are in
 microseconds unless stated.
 

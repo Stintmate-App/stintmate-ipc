@@ -1,4 +1,4 @@
-//! Channels (spec 2.5): event, state and stream channels on a node, publish with accept,
+//! Channels: event, state and stream channels on a node, publish with accept,
 //! state get, stream send, subscribe and active hooks, close. The subscriber is the core's
 //! blocking API.
 

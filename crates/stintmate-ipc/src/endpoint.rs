@@ -89,7 +89,7 @@ impl EndpointBuilder {
         self.cfg.features = features;
         self
     }
-    /// How long a client has to authenticate.
+    /// How long a client has to authenticate. The spec recommends at most 10 s; any duration is accepted.
     pub fn handshake_timeout(mut self, t: Duration) -> Self {
         self.cfg.handshake_timeout = t;
         self

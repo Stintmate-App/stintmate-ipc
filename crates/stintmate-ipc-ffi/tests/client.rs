@@ -1,4 +1,4 @@
-//! Clients through the C functions (spec 2.7, client half): connect errors and hooks,
+//! Clients through the C functions: connect errors and hooks,
 //! reconnection after the endpoint restarts, subscriptions that follow it, `connect`, calls
 //! without a connection. Core endpoints on random pipes with random keys.
 

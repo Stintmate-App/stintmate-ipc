@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2+docs.1 (2026-11-01)
+
+- Documentation corrected against the code: the README (ABI line, workspace, releases and their assets, the
+  checks that need `cargo-deny`), the specification (`evt` `ts` is optional, `STINTMATE_SETTINGS_FILE`, the
+  handshake figure is a recommendation, Stintmate-specific tables removed), the C header and the Rust
+  doc comments (options, `rate_hz`, key formats, parameter names), the test vectors' README and the CI
+  comment. The code is unchanged.
+
 ## 0.3.2 (2026-11-01)
 
 - A release built by the `release` workflow on GitHub-hosted runners. Earlier binaries were built on

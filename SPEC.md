@@ -10,8 +10,8 @@
 | Conformance tool | `stintmate-ipc-check` ([README](README.md#the-conformance-checker)) |
 
 Stintmate IPC is how the programs of a Stintmate installation talk to each other on one
-Windows PC: the telemetry database (Pitwall), the simulator connectors, the voice radio,
-the hub, and programs written by third parties. It is **brokerless** (each program serves
+Windows PC: a telemetry database, simulator connectors, a voice radio, a launcher app,
+and programs written by third parties. It is **brokerless** (each program serves
 its own endpoint and the others connect to it directly), **local** (Windows named pipes,
 current user only) and **open**: this document, with the test vectors, is enough to
 implement it in any language that can open a named pipe, compute HMAC-SHA256 and read and
@@ -47,7 +47,6 @@ It offers three primitives on one framing:
 19. [Implementer's guide](#19-implementers-guide)
 20. [History](#20-history)
 - [Appendix A: constants](#appendix-a-constants)
-- [Appendix B: the Stintmate endpoints (informative)](#appendix-b-the-stintmate-endpoints-informative)
 
 ## 1. Conventions
 
@@ -96,9 +95,9 @@ client                                                  server (endpoint)
 
 After the handshake the protocol does not distinguish client and server: either peer MAY
 call the methods the other declared and subscribe to the channels the other declared. A
-third-party connector therefore only ever needs to be a client: it opens Pitwall's
-endpoint, declares its own methods (`live_frame`, say) and streams (telemetry) in the
-handshake, and Pitwall calls and subscribes to them over the same connection.
+third-party connector therefore only ever needs to be a client: it opens the database
+app's endpoint, declares its own methods (`live_frame`, say) and streams (telemetry) in the
+handshake, and that app calls and subscribes to them over the same connection.
 
 ### 2.3 Brokerless
 
@@ -203,10 +202,9 @@ Examples: `\\.\pipe\stintmate-pitwall-alex`, `\\.\pipe\stintmate-voice-radio-ale
 Discovery is by **well-known names**: a client that knows the app (and process) it wants
 builds the name (4.1) and opens it. There is no lookup service.
 
-- The endpoints of the Stintmate apps are listed in appendix B.
+- The endpoint names of Stintmate's own apps are those apps' choice; the protocol fixes only the naming rule above.
 - A program that serves endpoints others must find, but whose names others cannot know in
-  advance (a third-party connector), publishes them where its users' tools look (for the
-  Stintmate hub: the connector descriptor `<workspace>\connectors\<id>\connector.json`)
+  advance (a third-party connector), publishes them where its users' tools look
   and in the registry (4.4).
 
 ### 4.3 The workspace
@@ -217,7 +215,9 @@ Stintmate keeps per-user data in a **workspace** folder. The IPC uses it for the
 1. its own configuration or command line, if it has one;
 2. the environment variable `STINTMATE_WORKSPACE`, if set and not blank;
 3. the pointer file `%APPDATA%\Stintmate\settings.json` (UTF-8, a BOM allowed): a JSON
-   object whose string field `workspace` is the folder.
+   object whose string field `workspace` is the folder. The reference implementation also
+   reads the environment variable `STINTMATE_SETTINGS_FILE`, if set, as the path of the pointer
+   file in place of that default (meant for tests).
 
 No workspace means no key file: the program cannot connect (8.1) and SHOULD say so.
 
@@ -630,7 +630,7 @@ still get their response.
 | `sub` | subscriber | `id`, `ch`, `v`, `o`? | exactly one `res` |
 | `unsub` | subscriber | `sid` | - |
 | `end` | owner | `sid`, `code`, `msg`? | - |
-| `evt` | owner | `sid`, `seq`, `ts`, `d` | - |
+| `evt` | owner | `sid`, `seq`, `ts`?, `d` | - |
 | `decl` | either | `decl` | - |
 | `ping` | either | `ts`? | `pong` |
 | `pong` | either | `ts`? (echoed) | - |
@@ -724,8 +724,8 @@ the owner was down) SHOULD carry an **idempotency key** `ik`.
   order and wait for each answer before sending the next when later ones depend on earlier
   ones.
 
-*Example (Stintmate):* the AMS2 connector writes each finished lap to its outbox on disk
-with a key `ams2/<session key>/lap/<n>`, calls `pitwall.write` with it when Pitwall runs,
+*Example:* a simulator connector writes each finished lap to its outbox on disk
+with a key `sim/<session key>/lap/<n>`, calls `pitwall.write` with it when the database app runs,
 and deletes the file after an `ok` (or a non-retryable error). A lap written twice because
 the first answer was lost is stored once.
 
@@ -799,7 +799,7 @@ After `end` the owner sends nothing more for that `sid`. The subscriber MAY subs
 An event (event channels) or a new value (state channels) on subscription `sid`. `seq`
 counts the items offered to this subscription: 1 for the first after subscribing, +1 each
 time; for state channels a gap means intermediate values were coalesced (12.3); for event
-channels there are no gaps (events are not dropped: 12.2). `ts` is `t_ns` when the event
+channels there are no gaps (events are not dropped: 12.2). `ts` is OPTIONAL; when present it is `t_ns` when the event
 happened or the value was set at the owner. `d` is the event or the **whole** new value
 (state channels never send deltas). An `evt` for an unknown `sid` is ignored.
 
@@ -1425,7 +1425,6 @@ rest. An implementation MUST isolate a failing filter in the same way.
 
 | Version | Date | |
 |---|---|---|
-| Connector protocol v1 | 2026 | The predecessor, `\\.\pipe\pitwall-<user>`: UTF-8 JSON Lines, `hello`/`welcome` with roles `connector` and `tool`, `request`/`response`/`notify`, live functions relayed by Pitwall's core, a user-only DACL and no authentication beyond it. Large payloads travelled as base64 inside JSON lines (a 1.7 MB lap per line). Each Stintmate app also had its own control pipe (one JSON line per connection), the voice radio a pipe of its own with an HMAC challenge, and events and messages travelled through files (`events.jsonl`, `inbox.jsonl`) read by polling. |
 | **2 (revision 2.0)** | 2026-10-20 | One protocol for every channel: length-prefixed binary frames, MessagePack messages, fixed-layout binary stream samples, chunked messages; mutual HMAC-SHA256 handshake with a workspace key and nonces bound to the pipe name; symmetric sessions (either peer calls and subscribes); declarations with versions; event, state and stream channels with snapshots and per-kind slow-subscriber rules; idempotency keys; heartbeat; endpoint names per app and process, and a registry. |
 
 ## Appendix A: constants
@@ -1441,7 +1440,7 @@ rest. An implementation MUST isolate a failing filter in the same way.
 | Minimum `max_frame` | 65536 |
 | Nonce, MAC, key sizes | 32 bytes each |
 | MAC labels | `stintmate-ipc/2 client\0`, `stintmate-ipc/2 server\0` |
-| Handshake deadline | 5 s (RECOMMENDED; at most 10 s) |
+| Handshake deadline | 5 s (RECOMMENDED; so is the 10 s ceiling, which the reference implementation does not enforce) |
 | Default request deadline | 5 s (RECOMMENDED) |
 | Heartbeat | `heartbeat_ms` from `welcome` (RECOMMENDED 5000); dead after 3 x |
 | Reconnect backoff | 0.25, 0.5, 1, 2 s, then 2 s; +-20 % jitter; 10 s after `unauthorized` |
@@ -1451,17 +1450,3 @@ rest. An implementation MUST isolate a failing filter in the same way.
 | Key file | `<workspace>\ipc\key`, 64 hex characters |
 | Registry | `<workspace>\ipc\endpoints\<endpoint-id>.json` |
 | Pipe DACL (SDDL) | `D:P(A;;GA;;;<user SID>)` |
-
-## Appendix B: the Stintmate endpoints (informative)
-
-The apps of Stintmate decide their endpoints in their own documentation. These are the ones
-Stintmate's own apps use; they are not part of the protocol and nothing in this repository's code uses them. Examples:
-
-| Endpoint | Pipe | Served by |
-|---|---|---|
-| `pitwall` | `stintmate-pitwall-<user>` | `pitwall-core` (database, write API, live relay) |
-| `pitwall-ui` | `stintmate-pitwall-ui-<user>` | Pitwall's control app (control while the core is off) |
-| `voice` | `stintmate-voice-<user>` | Stintmate Voice's control app (control, message tray) |
-| `voice-radio` | `stintmate-voice-radio-<user>` | the radio (`voice.say`, radio state) |
-| `connector-<id>` | `stintmate-connector-<id>-<user>` | a connector's control app |
-| `connector-<id>-<process>` | `stintmate-connector-<id>-<process>-<user>` | a connector service that serves (optional: services usually dial Pitwall) |

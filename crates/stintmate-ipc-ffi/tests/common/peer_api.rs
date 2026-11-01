@@ -1,4 +1,4 @@
-//! The peer, call, subscription and client functions of the DLL (spec 2.6, 2.7 client half),
+//! The peer, call, subscription and client functions of the DLL,
 //! resolved by name the way a C caller does. The library is the one `common::api()` builds
 //! and loads; loading it again only adds a reference.
 #![allow(dead_code, non_camel_case_types, clippy::missing_transmute_annotations)]

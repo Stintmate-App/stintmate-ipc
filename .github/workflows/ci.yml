@@ -1,9 +1,9 @@
 name: ci
 
-# Minutes are limited (free organisation, Windows counts double): CI runs by hand only
-# (Actions > ci > Run workflow); every check runs locally before each merge (README, "Building").
-# It runs on the organisation's own Windows runner `stintmate-win` (no GitHub minutes; private
-# repositories and workflow_dispatch only); `windows-latest` is the fallback when it is down.
+# CI runs by hand only (Actions > ci > Run workflow). The checks are the commands of the README,
+# "Building", plus `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+# and `cargo deny check licenses advisories bans sources` (needs `cargo-deny`).
+# The default runner is a self-hosted Windows machine; `windows-latest` is the alternative.
 on:
   workflow_dispatch:
     inputs:

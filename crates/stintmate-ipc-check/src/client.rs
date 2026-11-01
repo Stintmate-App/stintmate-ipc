@@ -1,4 +1,4 @@
-//! Client checks (C01-C11): serve a test endpoint and check what a client does (SPEC 17).
+//! Client checks (C00-C11): serve a test endpoint and check what a client does (SPEC 17).
 //!
 //! The test endpoint declares:
 //!

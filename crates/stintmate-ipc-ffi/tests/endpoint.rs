@@ -1,4 +1,4 @@
-//! Endpoint options, info, stop and the handshake-failed hook (spec 2.7, endpoint half).
+//! Endpoint options, info, stop and the handshake-failed hook.
 
 mod common;
 

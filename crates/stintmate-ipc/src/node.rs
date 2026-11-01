@@ -496,7 +496,7 @@ impl Node {
     }
 
     /// [`stream_channel`](Self::stream_channel) with the nominal rate and the ring size of each
-    /// subscription (default: one second at `rate_hz`, at least 64).
+    /// subscription (default: one second at `rate_hz`, at least 64; 256 when no rate is declared).
     pub fn stream_channel_with(
         &self,
         name: &str,
