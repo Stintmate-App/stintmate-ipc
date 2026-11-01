@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2+docs.2 (2026-11-01)
+
+- The repository is prepared for being public: the workflows run on GitHub-hosted Windows runners only (the `runner` input is gone), `SECURITY.md` says how to report a vulnerability, and the README has a "Contributing" section. The code is unchanged.
+
 ## 0.3.2+docs.1 (2026-11-01)
 
 - Documentation corrected against the code: the README (ABI line, workspace, releases and their assets, the

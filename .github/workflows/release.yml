@@ -23,11 +23,6 @@ on:
         description: Dry run (draft under a dry-run tag, deleted at the end)
         type: boolean
         default: true
-      runner:
-        description: Where to run
-        type: choice
-        options: [stintmate-win, windows-latest]
-        default: stintmate-win
 
 concurrency:
   group: release
@@ -46,9 +41,9 @@ env:
   DRY_RUN: ${{ inputs.dry_run }}
 
 jobs:
-  # One job: every job pays the runner's start, and the runner takes one job at a time.
+  # One job: every job pays the runner's start.
   release:
-    runs-on: ${{ inputs.runner == 'windows-latest' && 'windows-latest' || fromJSON('["self-hosted", "stintmate-win"]') }}
+    runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -80,9 +75,8 @@ jobs:
         working-directory: tree
       - run: cargo test --workspace
         working-directory: tree
-      # cargo-deny: installed on stintmate-win; GitHub's runner installs it here.
-      - if: runner.environment == 'github-hosted'
-        uses: taiki-e/install-action@v2
+      # cargo-deny, from a prebuilt binary.
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
       - run: cargo deny check licenses advisories bans sources

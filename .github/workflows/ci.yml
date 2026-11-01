@@ -3,15 +3,8 @@ name: ci
 # CI runs by hand only (Actions > ci > Run workflow). The checks are the commands of the README,
 # "Building", plus `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`
 # and `cargo deny check licenses advisories bans sources` (needs `cargo-deny`).
-# The default runner is a self-hosted Windows machine; `windows-latest` is the alternative.
 on:
   workflow_dispatch:
-    inputs:
-      runner:
-        description: Where to run
-        type: choice
-        options: [stintmate-win, windows-latest]
-        default: stintmate-win
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,9 +14,9 @@ permissions:
   contents: read
 
 jobs:
-  # One job: every job pays the runner's start, and the runner takes one job at a time.
+  # One job: every job pays the runner's start.
   ci:
-    runs-on: ${{ inputs.runner == 'windows-latest' && 'windows-latest' || fromJSON('["self-hosted", "stintmate-win"]') }}
+    runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -37,9 +30,8 @@ jobs:
       # The C ABI DLL the tests use (cargo test does not build cdylibs).
       - run: cargo build --workspace
       - run: cargo test --workspace
-      # cargo-deny: installed on stintmate-win; GitHub's runner installs it here.
-      - if: runner.environment == 'github-hosted'
-        uses: taiki-e/install-action@v2
+      # cargo-deny, from a prebuilt binary.
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
       - run: cargo deny check licenses advisories bans sources
