@@ -37,7 +37,7 @@ fail with "no workspace" until one of them is set.
 
 ## The C ABI
 
-The ABI is versioned apart from the crate (ABI 1.0, with crate 0.3.2): MAJOR changes on any
+The ABI is versioned apart from the crate (ABI 1.0, with crate 0.3.3): MAJOR changes on any
 removal, rename, signature or meaning change; MINOR grows when functions, constants, struct
 fields at the end or MessagePack map keys are added. A caller accepts a DLL with the same
 MAJOR and a MINOR at least its own (`stintmate_ipc_abi_version()`). The rules (return codes,

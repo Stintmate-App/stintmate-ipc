@@ -1037,7 +1037,7 @@ pub unsafe extern "C" fn stintmate_ipc_channel_is_active(ch: *mut stintmate_ipc_
     })
 }
 
-/// Ends every subscription (`end` with `code`, default `closed`) and withdraws the channel.
+/// Ends every subscription (`end` with `code`, default `channel_closed`) and withdraws the channel.
 ///
 /// # Safety
 /// `ch` valid; strings NUL-terminated or null.
@@ -1054,7 +1054,7 @@ pub unsafe extern "C" fn stintmate_ipc_channel_close(
                 return invalid("channel is null");
             };
             let code = match opt_cstr(code, "code") {
-                Ok(c) => c.unwrap_or("closed"),
+                Ok(c) => c.unwrap_or("channel_closed"),
                 Err(s) => return s,
             };
             let message = match opt_cstr(message, "message") {
