@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1+docs.3 (2026-11-01)
+
+- The `release` workflow expects `gh` on the runner, as GitHub's Windows image has it, and no
+  longer brings its own copy. The code is unchanged.
+
 ## 0.3.1+docs.2 (2026-11-01)
 
 - The `release` workflow brings a pinned GitHub CLI when the runner has none, and its tag check
